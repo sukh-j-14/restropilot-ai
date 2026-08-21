@@ -1,4 +1,4 @@
-export type AIErrorCode = "CONFIGURATION" | "PROVIDER" | "TIMEOUT" | "RATE_LIMIT" | "INVALID_RESPONSE" | "INVALID_REQUEST" | "INVALID_TOOL" | "TOOL_FAILED" | "LOOP_LIMIT" | "TOOL_ROUND_LIMIT" | "TOOL_CALL_LIMIT" | "MALFORMED_TOOL_CALL" | "FINAL_RESPONSE_MISSING";
+export type AIErrorCode = "CONFIGURATION" | "PROVIDER" | "TIMEOUT" | "RATE_LIMIT" | "INVALID_RESPONSE" | "INVALID_REQUEST" | "INVALID_HISTORY" | "INVALID_TOOL" | "TOOL_FAILED" | "LOOP_LIMIT" | "TOOL_ROUND_LIMIT" | "TOOL_CALL_LIMIT" | "MALFORMED_TOOL_CALL" | "FINAL_RESPONSE_MISSING";
 
 export class AIManagerError extends Error {
   constructor(public readonly code: AIErrorCode, message: string) { super(message); this.name = "AIManagerError"; }
@@ -11,6 +11,7 @@ export function safeAIErrorMessage(error: unknown) {
     case "TIMEOUT": return "The AI service took too long to respond. Please try again.";
     case "RATE_LIMIT": return "AI Manager is receiving too many requests. Please wait a moment and try again.";
     case "INVALID_REQUEST": return error.message;
+    case "INVALID_HISTORY": return "Conversation history is invalid. Clear the conversation and try again.";
     case "LOOP_LIMIT":
     case "TOOL_ROUND_LIMIT":
     case "TOOL_CALL_LIMIT":

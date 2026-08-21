@@ -39,7 +39,7 @@ export function createOpenRouterProvider(environment: NodeJS.ProcessEnv = proces
         response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
           method: "POST",
           headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "X-Title": "RestroPilot AI" },
-          body: JSON.stringify({ model, messages: request.messages.map(providerMessage), ...(request.tools.length ? { tools: request.tools.map((tool) => ({ type: "function", function: tool })), tool_choice: "auto", parallel_tool_calls: true } : {}), temperature: 0.2, max_completion_tokens: request.maxOutputTokens, stream: false }),
+          body: JSON.stringify({ model: request.preferredModel ?? model, messages: request.messages.map(providerMessage), ...(request.tools.length ? { tools: request.tools.map((tool) => ({ type: "function", function: tool })), tool_choice: request.toolChoice, parallel_tool_calls: request.toolChoice === "auto" } : {}), temperature: 0.2, max_completion_tokens: request.maxOutputTokens, stream: false }),
           signal: AbortSignal.timeout(request.timeoutMs),
         });
       } catch (error) {

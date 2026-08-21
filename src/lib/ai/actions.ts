@@ -7,7 +7,7 @@ import { diagnosticReason, logAIOrchestration } from "@/lib/ai/diagnostics";
 import type { AIConversationMessage } from "@/lib/ai/types";
 import { getCurrentRestaurant } from "@/lib/services/tenant";
 
-export type AIManagerActionResult = { success: true; answer: string; toolsUsed: string[]; activities: string[] } | { success: false; message: string };
+export type AIManagerActionResult = { success: true; answer: string; toolsUsed: string[]; activities: string[] } | { success: false; message: string; clearHistory?: boolean };
 export async function requestAIManager(input: { message: string; history: AIConversationMessage[] }): Promise<AIManagerActionResult> {
   try {
     const restaurant = await getCurrentRestaurant();
@@ -17,6 +17,6 @@ export async function requestAIManager(input: { message: string; history: AIConv
   } catch (error) {
     const code = error instanceof AIManagerError ? error.code : "PROVIDER";
     logAIOrchestration({ stage: "action_failed", reason: diagnosticReason(code) });
-    return { success: false, message: safeAIErrorMessage(error) };
+    return { success: false, message: safeAIErrorMessage(error), clearHistory: error instanceof AIManagerError && error.code === "INVALID_HISTORY" };
   }
 }

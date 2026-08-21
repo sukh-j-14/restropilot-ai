@@ -1,4 +1,4 @@
-const PRIVATE_KEYS = new Set(["id", "restaurantId", "ingredientId", "menuItemId", "purchaseOrderId", "supplierId"]);
+const PRIVATE_KEYS = new Set(["id", "restaurantId", "ingredientId", "menuItemId", "purchaseOrderId", "supplierId", "clerkOrganizationId", "customerName", "customerEmail", "customerPhone", "email", "phone"]);
 
 function safeValue(value: unknown, depth = 0): unknown {
   if (depth > 5) return "[truncated]";
