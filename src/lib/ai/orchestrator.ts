@@ -2,9 +2,10 @@ import { diagnosticReason, logAIOrchestration } from "@/lib/ai/diagnostics";
 import { AIManagerError } from "@/lib/ai/errors";
 import { MAX_ASSISTANT_MESSAGE_LENGTH, MAX_TOOL_CALLS, MAX_TOOL_ROUNDS, OVERALL_AI_TIMEOUT_MS, PROVIDER_TIMEOUT_MS } from "@/lib/ai/limits";
 import { buildAIManagerSystemPrompt } from "@/lib/ai/prompt";
-import type { AIConversationMessage, AIManagerResult, AIProvider, AIProviderMessage, AIProviderResponse, AIRestaurantContext, AIToolDefinition } from "@/lib/ai/types";
+import type { PurchaseOrderProposalCandidate } from "@/lib/ai/action-proposal-types";
+import type { AIConversationMessage, AIOrchestrationResult, AIProvider, AIProviderMessage, AIProviderResponse, AIRestaurantContext, AIToolDefinition } from "@/lib/ai/types";
 
-type ToolResult = { content: string; activity: string };
+type ToolResult = { content: string; activity: string; proposalCandidate?: PurchaseOrderProposalCandidate };
 type ToolExecutor = (input: { name: string; arguments: unknown; restaurant: AIRestaurantContext }) => Promise<ToolResult>;
 
 function stableValue(value: unknown): unknown {
@@ -32,10 +33,10 @@ export function validateFinalAnswer(value: unknown, selectedModel?: string) {
   return answer;
 }
 
-export async function runAIToolLoop(input: { provider: AIProvider; restaurant: AIRestaurantContext; history: AIConversationMessage[]; message: string; toolDefinitions: AIToolDefinition[]; executeTool: ToolExecutor; now?: Date }): Promise<AIManagerResult> {
+export async function runAIToolLoop(input: { provider: AIProvider; restaurant: AIRestaurantContext; history: AIConversationMessage[]; message: string; toolDefinitions: AIToolDefinition[]; executeTool: ToolExecutor; now?: Date }): Promise<AIOrchestrationResult> {
   const messages: AIProviderMessage[] = [{ role: "system", content: buildAIManagerSystemPrompt(input.restaurant, input.now) }, ...input.history, { role: "user", content: input.message }];
   const toolsUsed: string[] = []; const activities: string[] = []; const cache = new Map<string, ToolResult>();
-  const started = Date.now(); let totalCalls = 0; let providerRounds = 0; let collectionRounds = 0; let lastToolCapableModel: string | undefined;
+  const started = Date.now(); let totalCalls = 0; let providerRounds = 0; let collectionRounds = 0; let lastToolCapableModel: string | undefined; let proposalCandidate: PurchaseOrderProposalCandidate | undefined;
 
   async function generate(tools: AIToolDefinition[], phase: "tools" | "synthesis"): Promise<AIProviderResponse> {
     const elapsed = Date.now() - started; const remaining = OVERALL_AI_TIMEOUT_MS - elapsed;
@@ -77,6 +78,7 @@ export async function runAIToolLoop(input: { provider: AIProvider; restaurant: A
           catch (error) { const code = error instanceof AIManagerError ? error.code : "TOOL_FAILED"; messages.push({ role: "tool", toolCallId: call.id, name: call.name, content: JSON.stringify({ error: code, message: "Tool request was rejected or unavailable." }) }); continue; }
         }
         toolsUsed.push(call.name); activities.push(result.activity);
+        if (result.proposalCandidate) proposalCandidate = result.proposalCandidate;
         messages.push({ role: "tool", toolCallId: call.id, name: call.name, content: result.content });
       }
     }
@@ -87,7 +89,7 @@ export async function runAIToolLoop(input: { provider: AIProvider; restaurant: A
     if (synthesis.toolCalls.length) throw new AIManagerError("TOOL_ROUND_LIMIT", "Provider requested tools during disabled final synthesis.");
     const answer = validateFinalAnswer(synthesis.content, synthesis.selectedModel);
     logAIOrchestration({ stage: "synthesis_completed", collectionRounds, totalToolCalls: totalCalls, answerLength: answer.length, restaurantId: input.restaurant.id, provider: input.provider.name });
-    return { answer, toolsUsed: [...new Set(toolsUsed)], activities: [...new Set(activities)] };
+    return { answer, toolsUsed: [...new Set(toolsUsed)], activities: [...new Set(activities)], ...(proposalCandidate ? { proposalCandidate } : {}) };
   } catch (error) {
     const code = error instanceof AIManagerError ? error.code : "PROVIDER";
     logAIOrchestration({ stage: "request_failed", reason: diagnosticReason(code), providerRounds, totalToolCalls: totalCalls, durationMs: Date.now() - started, restaurantId: input.restaurant.id, provider: input.provider.name });

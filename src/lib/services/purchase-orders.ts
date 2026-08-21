@@ -56,15 +56,17 @@ export async function listPurchaseOrders(input: { restaurantId: string; status?:
   return orders.map(serialize);
 }
 
-type DraftInput = { restaurantId: string; supplierId: string; expectedAt: Date | null; items: PurchaseOrderLineFields[] };
+export type DraftInput = { restaurantId: string; supplierId: string; expectedAt: Date | null; items: PurchaseOrderLineFields[] };
+
+export async function createPurchaseOrderInTransaction(transaction: Prisma.TransactionClient, input: DraftInput) {
+  await assertResources(transaction, input.restaurantId, input.supplierId, input.items);
+  const totalAmount = calculatePurchaseOrderTotal(input.items);
+  return serialize(await transaction.purchaseOrder.create({ data: { restaurantId: input.restaurantId, supplierId: input.supplierId, expectedAt: input.expectedAt, totalAmount, status: PurchaseOrderStatus.DRAFT, items: { create: input.items.map((item) => ({ ingredientId: item.ingredientId, quantity: item.quantity, unitCost: item.unitCost })) } }, include: orderInclude }));
+}
 
 export async function createPurchaseOrder(input: DraftInput) {
   assertRestaurantId(input.restaurantId); assertIdentifier(input.supplierId, "supplierId");
-  return prisma.$transaction(async (transaction) => {
-    await assertResources(transaction, input.restaurantId, input.supplierId, input.items);
-    const totalAmount = calculatePurchaseOrderTotal(input.items);
-    return serialize(await transaction.purchaseOrder.create({ data: { restaurantId: input.restaurantId, supplierId: input.supplierId, expectedAt: input.expectedAt, totalAmount, status: PurchaseOrderStatus.DRAFT, items: { create: input.items.map((item) => ({ ingredientId: item.ingredientId, quantity: item.quantity, unitCost: item.unitCost })) } }, include: orderInclude }));
-  });
+  return prisma.$transaction((transaction) => createPurchaseOrderInTransaction(transaction, input));
 }
 
 export async function updateDraftPurchaseOrder(input: DraftInput & { purchaseOrderId: string }) {

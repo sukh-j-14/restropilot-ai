@@ -23,4 +23,6 @@ export interface AIProvider {
 }
 
 export type AIRestaurantContext = { id: string; name: string; timezone: string; currency: string; guestCapacity: number | null };
-export type AIManagerResult = { answer: string; toolsUsed: string[]; activities: string[] };
+import type { AIActionProposal, PurchaseOrderProposalCandidate } from "@/lib/ai/action-proposal-types";
+export type AIManagerResult = { answer: string; toolsUsed: string[]; activities: string[]; actionProposal?: AIActionProposal | null };
+export type AIOrchestrationResult = Omit<AIManagerResult, "actionProposal"> & { proposalCandidate?: PurchaseOrderProposalCandidate };

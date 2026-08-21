@@ -50,17 +50,30 @@ enum ImportType {
   HISTORICAL_RESERVATIONS
 }
 
+enum AIActionProposalType {
+  CREATE_PURCHASE_ORDER_DRAFT
+}
+
+enum AIActionProposalStatus {
+  PENDING
+  APPROVED
+  EXECUTED
+  REJECTED
+  EXPIRED
+  FAILED
+}
+
 model Restaurant {
-  id                  String          @id @default(cuid())
-  clerkOrganizationId String?         @unique
+  id                  String             @id @default(cuid())
+  clerkOrganizationId String?            @unique
   name                String
-  timezone            String          @default("Asia/Kolkata")
-  currency            String          @default("INR") @db.VarChar(3)
+  timezone            String             @default("Asia/Kolkata")
+  currency            String             @default("INR") @db.VarChar(3)
   phone               String?
   address             String?
-  guestCapacity       Int?            @default(96)
-  createdAt           DateTime        @default(now())
-  updatedAt           DateTime        @updatedAt
+  guestCapacity       Int?               @default(96)
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
   users               User[]
   menuItems           MenuItem[]
   ingredients         Ingredient[]
@@ -69,6 +82,7 @@ model Restaurant {
   orders              Order[]
   reservations        Reservation[]
   importBatches       ImportBatch[]
+  aiActionProposals   AIActionProposal[]
 
   @@index([name])
 }
@@ -150,22 +164,47 @@ model Supplier {
 }
 
 model PurchaseOrder {
-  id           String              @id @default(cuid())
-  restaurantId String
-  supplierId   String
-  status       PurchaseOrderStatus @default(DRAFT)
-  totalAmount  Decimal             @default(0) @db.Decimal(12, 2)
-  orderedAt    DateTime?
-  expectedAt   DateTime?
-  createdAt    DateTime            @default(now())
-  updatedAt    DateTime            @updatedAt
-  restaurant   Restaurant          @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
-  supplier     Supplier            @relation(fields: [supplierId], references: [id], onDelete: Restrict)
-  items        PurchaseOrderItem[]
+  id             String              @id @default(cuid())
+  restaurantId   String
+  supplierId     String
+  status         PurchaseOrderStatus @default(DRAFT)
+  totalAmount    Decimal             @default(0) @db.Decimal(12, 2)
+  orderedAt      DateTime?
+  expectedAt     DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  restaurant     Restaurant          @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  supplier       Supplier            @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  items          PurchaseOrderItem[]
+  actionProposal AIActionProposal?
 
   @@index([restaurantId, status])
   @@index([supplierId])
   @@index([expectedAt])
+}
+
+model AIActionProposal {
+  id                      String                 @id @default(cuid())
+  restaurantId            String
+  type                    AIActionProposalType
+  status                  AIActionProposalStatus @default(PENDING)
+  payloadJson             Json
+  displayJson             Json
+  explanation             String
+  createdByClerkUserId    String
+  approvedByClerkUserId   String?
+  rejectedByClerkUserId   String?
+  createdAt               DateTime               @default(now())
+  expiresAt               DateTime
+  approvedAt              DateTime?
+  rejectedAt              DateTime?
+  executedAt              DateTime?
+  executedPurchaseOrderId String?                @unique
+  restaurant              Restaurant             @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  executedPurchaseOrder   PurchaseOrder?         @relation(fields: [executedPurchaseOrderId], references: [id], onDelete: SetNull)
+
+  @@index([restaurantId, status, createdAt])
+  @@index([expiresAt])
 }
 
 model PurchaseOrderItem {
@@ -182,19 +221,19 @@ model PurchaseOrderItem {
 }
 
 model Order {
-  id           String      @id @default(cuid())
-  restaurantId String
-  orderNumber  String
-  status       OrderStatus @default(PENDING)
-  orderType    OrderType
-  subtotal     Decimal     @db.Decimal(12, 2)
-  discount     Decimal     @default(0) @db.Decimal(12, 2)
-  tax          Decimal     @default(0) @db.Decimal(12, 2)
-  total        Decimal     @db.Decimal(12, 2)
+  id                  String      @id @default(cuid())
+  restaurantId        String
+  orderNumber         String
+  status              OrderStatus @default(PENDING)
+  orderType           OrderType
+  subtotal            Decimal     @db.Decimal(12, 2)
+  discount            Decimal     @default(0) @db.Decimal(12, 2)
+  tax                 Decimal     @default(0) @db.Decimal(12, 2)
+  total               Decimal     @db.Decimal(12, 2)
   inventoryConsumedAt DateTime?
-  createdAt    DateTime    @default(now())
-  restaurant   Restaurant  @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
-  items        OrderItem[]
+  createdAt           DateTime    @default(now())
+  restaurant          Restaurant  @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  items               OrderItem[]
 
   @@unique([restaurantId, orderNumber])
   @@index([restaurantId, createdAt])

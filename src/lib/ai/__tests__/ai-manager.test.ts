@@ -9,6 +9,8 @@ import { createFallbackProvider } from "../providers/fallback";
 import { serializeToolResult } from "../serialization";
 import { getReadOnlyToolContractNames, getReadOnlyToolContracts, validateReadOnlyToolArguments } from "../tool-contracts";
 import type { AIProvider, AIProviderRequest, AIProviderResponse, AIRestaurantContext } from "../types";
+import { validateProposalCandidate } from "../action-proposal-validation";
+import { PURCHASE_ORDER_PROPOSAL_TOOL, purchaseOrderProposalToolDefinition } from "../proposal-tool";
 
 const restaurant: AIRestaurantContext = { id: "internal-tenant-id", name: "Test Kitchen", timezone: "Asia/Kolkata", currency: "INR", guestCapacity: 80 };
 const tool = (id: string, name: string, args: unknown): AIProviderResponse => ({ content: "", toolCalls: [{ id, name, arguments: typeof args === "string" ? args : JSON.stringify(args) }], finishReason: "tool_calls" });
@@ -76,6 +78,32 @@ test("allowlist contains only the approved read-only tools", () => {
   assert.ok(names.includes("list_recent_orders"));
   assert.equal(names.some((name) => /create|update|delete|sql|query|write/i.test(name)), false);
   assert.throws(() => validateReadOnlyToolArguments("run_sql", {}, restaurant), AIManagerError);
+});
+
+test("purchase-order proposal contract is strict and non-executing", () => {
+  const candidate = validateProposalCandidate({ supplier_name: "Dairy Supplier", items: [{ ingredient_name: "Paneer", quantity: 12.5 }], explanation: "Stock is below the reorder level." });
+  assert.equal(candidate.items[0].quantity, 12.5);
+  assert.equal(PURCHASE_ORDER_PROPOSAL_TOOL, "propose_purchase_order_draft");
+  assert.doesNotMatch(PURCHASE_ORDER_PROPOSAL_TOOL, /create|update|delete|order_now|receive/i);
+  assert.throws(() => validateProposalCandidate({ type: "DELETE_INVENTORY", supplier_name: "x", items: [{ ingredient_name: "Paneer", quantity: 1 }], explanation: "x" }));
+  assert.throws(() => validateProposalCandidate({ supplier_name: "x", items: [{ ingredient_name: "Paneer", quantity: -1 }], explanation: "x" }));
+  assert.throws(() => validateProposalCandidate({ supplier_name: "x", items: [{ ingredient_name: "Paneer", quantity: 1 }, { ingredient_name: "paneer", quantity: 2 }], explanation: "x" }));
+});
+
+test("proposal tool uses Gemini-compatible numeric schema keywords", () => {
+  const text = JSON.stringify(purchaseOrderProposalToolDefinition.parameters);
+  assert.doesNotMatch(text, /exclusiveMinimum|exclusiveMaximum/);
+  assert.match(text, /minimum/);
+});
+
+test("proposal metadata remains separate from the assistant answer and browser history", async () => {
+  const args = { supplier_name: "Dairy Supplier", items: [{ ingredient_name: "Paneer", quantity: 12 }], explanation: "Low stock." };
+  const provider = new SequenceProvider([tool("proposal", PURCHASE_ORDER_PROPOSAL_TOOL, args), { content: "I recommend reviewing a draft purchase order.", toolCalls: [], finishReason: "stop" }, { content: "**PROPOSED ACTION**\nReview the purchase-order draft below.", toolCalls: [], finishReason: "stop" }]);
+  const result = await runAIToolLoop({ provider, restaurant, history: [], message: "What should I do about Paneer?", toolDefinitions: [...getReadOnlyToolContracts(), purchaseOrderProposalToolDefinition], executeTool: async ({ name, arguments: value }) => ({ content: "{\"accepted\":true}", activity: "Preparing...", ...(name === PURCHASE_ORDER_PROPOSAL_TOOL ? { proposalCandidate: validateProposalCandidate(value) } : {}) }) });
+  assert.equal(result.proposalCandidate?.supplierName, "Dairy Supplier");
+  assert.doesNotMatch(result.answer, /supplier_name|ingredient_name|proposalCandidate/);
+  const history = buildBrowserConversationHistory([{ role: "assistant", content: result.answer, actionProposal: result.proposalCandidate }]);
+  assert.deepEqual(history, [{ role: "assistant", content: result.answer }]);
 });
 
 test("multi-tool loop injects trusted tenant context and returns approved activity", async () => {

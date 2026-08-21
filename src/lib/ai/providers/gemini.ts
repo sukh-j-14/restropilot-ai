@@ -17,11 +17,13 @@ function safeJSON(value: string, fallback: Record<string, unknown>) {
   } catch { return fallback; }
 }
 
-function toGeminiSchema(value: unknown): unknown {
+export function toGeminiSchema(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(toGeminiSchema);
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(Object.entries(value as Record<string, unknown>)
-    .filter(([key]) => key !== "additionalProperties")
+    // Gemini FunctionDeclaration accepts a selected OpenAPI Schema subset.
+    // Keep stricter rules in server validation when a keyword is unsupported.
+    .filter(([key]) => key !== "additionalProperties" && key !== "exclusiveMinimum" && key !== "exclusiveMaximum")
     .map(([key, item]) => [key, toGeminiSchema(item)]));
 }
 
