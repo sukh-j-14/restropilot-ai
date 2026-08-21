@@ -1,0 +1,2 @@
+export const LEGACY_RESTAURANT_GUEST_CAPACITY = 96;
+export const DINNER_START_HOUR = 18;
