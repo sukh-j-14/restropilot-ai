@@ -53,7 +53,7 @@ export async function createRestaurantAction(
     where: { clerkOrganizationId: orgId },
     select: { id: true },
   });
-  if (existing) redirect("/");
+  if (existing) redirect("/overview");
 
   let setupCompletedElsewhere = false;
   try {
@@ -75,6 +75,6 @@ export async function createRestaurantAction(
     }
   }
 
-  if (setupCompletedElsewhere) redirect("/");
-  redirect("/");
+  if (setupCompletedElsewhere) redirect("/overview");
+  redirect("/overview");
 }

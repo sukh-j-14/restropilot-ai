@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "node --import ./scripts/test-bootstrap.mjs --import tsx --test --test-concurrency=1 src/lib/services/__tests__/calculations.test.ts src/lib/onboarding/__tests__/validation.test.ts src/lib/catalog/__tests__/catalog.test.ts src/lib/catalog/__tests__/recipes-suppliers.test.ts src/lib/catalog/__tests__/purchase-orders.test.ts src/lib/catalog/__tests__/orders.test.ts src/lib/catalog/__tests__/imports.test.ts src/lib/reservations/__tests__/reservations.test.ts src/lib/sales/__tests__/sales.test.ts src/lib/settings/__tests__/settings.test.ts src/lib/header/__tests__/header-controls.test.ts src/lib/ai/__tests__/ai-manager.test.ts src/components/ai/__tests__/assistant-markdown.test.tsx src/components/ui/__tests__/confirm-action.test.tsx",
+    "test": "node --import ./scripts/test-bootstrap.mjs --import tsx --test --test-concurrency=1 src/lib/services/__tests__/calculations.test.ts src/lib/onboarding/__tests__/validation.test.ts src/lib/catalog/__tests__/catalog.test.ts src/lib/catalog/__tests__/recipes-suppliers.test.ts src/lib/catalog/__tests__/purchase-orders.test.ts src/lib/catalog/__tests__/orders.test.ts src/lib/catalog/__tests__/imports.test.ts src/lib/reservations/__tests__/reservations.test.ts src/lib/sales/__tests__/sales.test.ts src/lib/settings/__tests__/settings.test.ts src/lib/header/__tests__/header-controls.test.ts src/lib/marketing/__tests__/marketing.test.ts src/lib/ai/__tests__/ai-manager.test.ts src/components/ai/__tests__/assistant-markdown.test.tsx src/components/ui/__tests__/confirm-action.test.tsx",
     "seed": "prisma db seed",
     "postinstall": "prisma generate"
   },

@@ -19,7 +19,7 @@ function WorkspaceState({ title, description }: { title: string; description: st
   );
 }
 
-export default async function Home() {
+export default async function OverviewPage() {
   await connection();
 
   let restaurant;
@@ -48,3 +48,5 @@ export default async function Home() {
     </DashboardShell>
   );
 }
+
+

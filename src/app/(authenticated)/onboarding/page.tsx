@@ -29,7 +29,7 @@ export default async function OnboardingPage() {
     );
   }
 
-  if (restaurant) redirect("/");
+  if (restaurant) redirect("/overview");
 
   return (
     <DashboardShell restaurantName="New restaurant setup">

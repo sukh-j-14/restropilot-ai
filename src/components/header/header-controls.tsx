@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Icon } from "@/components/icons";
+import { ThemeControl } from "@/components/theme-control";
 import type { OperationalNotification } from "@/lib/header/notifications";
 import { workspaceInitials, workspaceMenuState } from "@/lib/header/workspaces";
 
@@ -55,7 +56,7 @@ export function HeaderControls({ notifications, notificationDataUnavailable }: {
     try {
       await setActive({ organization: id });
       setOpen(null);
-      router.replace("/");
+      router.replace("/overview");
       router.refresh();
     } catch { setWorkspaceError("Workspace could not be switched. Please try again."); }
     finally { setSwitchingId(null); }
@@ -78,6 +79,7 @@ export function HeaderControls({ notifications, notificationDataUnavailable }: {
       <button ref={attentionButtonRef} type="button" aria-label={`Operational attention items${notifications.length ? `, ${notifications.length} available` : ""}`} aria-haspopup="menu" aria-controls="attention-menu" aria-expanded={open === "attention"} onClick={() => setOpen((value) => value === "attention" ? null : "attention")} className="relative flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-800"><Icon name="bell" className="h-[18px] w-[18px]" />{notifications.length > 0 && <span className="absolute right-1.5 top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full border-2 border-white bg-amber-500 px-0.5 text-[8px] font-bold text-white">{notifications.length}</span>}</button>
       {open === "attention" && <div ref={attentionMenuRef} id="attention-menu" role="menu" aria-label="Operational attention items" onKeyDown={navigateMenu} className="absolute right-0 z-50 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl"><div className="border-b border-slate-100 px-4 py-3"><p className="text-sm font-bold text-slate-900">Needs attention</p><p className="mt-0.5 text-xs text-slate-500">Live operational signals, not persistent unread messages.</p></div><div className="max-h-96 overflow-y-auto p-2">{notifications.length ? notifications.map((item) => <Link role="menuitem" href={item.href} key={item.key} onClick={() => setOpen(null)} className="block rounded-lg px-3 py-3 hover:bg-slate-50"><div className="flex gap-3"><span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${item.category === "inventory" ? "bg-rose-500" : item.category === "reservations" ? "bg-sky-500" : "bg-amber-500"}`} /><span><span className="block text-sm font-semibold text-slate-800">{item.title}</span><span className="mt-1 block text-xs leading-5 text-slate-500">{item.detail}</span></span></div></Link>) : <div className="px-4 py-8 text-center"><p className="text-sm font-semibold text-slate-800">You’re all caught up.</p><p className="mt-1 text-xs text-slate-500">No actionable operational items right now.</p></div>}{notificationDataUnavailable && <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">Some operational signals could not be loaded.</p>}</div></div>}
     </div>
+    <ThemeControl compact />
     <UserButton showName />
   </div>;
 }

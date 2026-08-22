@@ -4,7 +4,7 @@ import { Icon, type IconName } from "@/components/icons";
 import { HeaderControlsServer } from "@/components/header/header-controls-server";
 
 const navigation: { key: string; label: string; icon: IconName; href: string }[] = [
-  { key: "overview", label: "Overview", icon: "overview", href: "/" },
+  { key: "overview", label: "Overview", icon: "overview", href: "/overview" },
   { key: "ai", label: "AI Manager", icon: "sparkles", href: "/ai-manager" },
   { key: "sales", label: "Sales", icon: "sales", href: "/sales" },
   { key: "orders", label: "Orders", icon: "orders", href: "/orders" },
