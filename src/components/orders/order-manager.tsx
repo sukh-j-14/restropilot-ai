@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useActionState, useState } from "react";
+import { ConfirmSubmitButton } from "@/components/ui/confirm-action";
 import { ActionFeedback } from "@/components/catalog/action-feedback";
 import type { CatalogActionState } from "@/lib/catalog/action-utils";
 import { createOrderAction, transitionOrderAction } from "@/lib/orders/actions";
@@ -28,7 +29,7 @@ function WorkflowControls({ order, compact = false }: { order: OrderView; compac
   const [state, action, pending] = useActionState(transitionOrderAction, initialState);
   const next = nextStatus[order.status];
   const cancellable = !["COMPLETED", "CANCELLED"].includes(order.status);
-  return <div className={compact ? "mt-3" : "mt-4 border-t border-slate-100 pt-4"}><div className="flex flex-wrap gap-2">{next && <form action={action} onSubmit={(event) => { if (next.to === "PREPARING" && !window.confirm("Start preparation and consume recipe inventory now?")) event.preventDefault(); }}><input type="hidden" name="orderId" value={order.id} /><input type="hidden" name="to" value={next.to} /><button disabled={pending} className="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">{next.label}</button></form>}{cancellable && <form action={action} onSubmit={(event) => { const warning = order.inventoryConsumedAt ? "Cancel this order? Consumed inventory will not be restored." : "Cancel this order?"; if (!window.confirm(warning)) event.preventDefault(); }}><input type="hidden" name="orderId" value={order.id} /><input type="hidden" name="to" value="CANCELLED" /><button disabled={pending} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-bold text-rose-600 disabled:opacity-50">Cancel</button></form>}</div><ActionFeedback state={state} /></div>;
+  return <div className={compact ? "mt-3" : "mt-4 border-t border-slate-100 pt-4"}><div className="flex flex-wrap gap-2">{next && <form action={action}><input type="hidden" name="orderId" value={order.id} /><input type="hidden" name="to" value={next.to} />{next.to === "PREPARING" ? <ConfirmSubmitButton pending={pending} label={next.label} confirmLabel="Start preparing" message="Start preparation and consume recipe inventory now?" className="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-bold text-white disabled:opacity-50" /> : <button disabled={pending} className="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-bold text-white disabled:opacity-50">{next.label}</button>}</form>}{cancellable && <form action={action}><input type="hidden" name="orderId" value={order.id} /><input type="hidden" name="to" value="CANCELLED" /><ConfirmSubmitButton pending={pending} label="Cancel" confirmLabel="Cancel order" message={order.inventoryConsumedAt ? "Cancel this order? Consumed inventory will not be restored." : "Cancel this order?"} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-bold text-rose-600 disabled:opacity-50" /></form>}</div><ActionFeedback state={state} /></div>;
 }
 
 function KitchenBoard({ orders }: { orders: OrderView[] }) {

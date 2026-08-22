@@ -1,0 +1,3 @@
+export default function ReservationsLoading() {
+  return <main className="min-h-screen bg-slate-50 p-8" aria-busy="true" aria-label="Loading reservations"><div className="h-7 w-48 animate-pulse rounded bg-slate-200" /><div className="mt-7 grid gap-4 sm:grid-cols-3">{[1, 2, 3].map((item) => <div key={item} className="h-28 animate-pulse rounded-xl bg-slate-200/70" />)}</div><div className="mt-7 h-44 animate-pulse rounded-xl bg-slate-200/70" /><div className="mt-5 grid gap-4 xl:grid-cols-2">{[1, 2, 3, 4].map((item) => <div key={item} className="h-40 animate-pulse rounded-xl bg-slate-200/70" />)}</div></main>;
+}

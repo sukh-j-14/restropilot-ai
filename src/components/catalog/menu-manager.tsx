@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
+import { ConfirmSubmitButton } from "@/components/ui/confirm-action";
 import { ActionFeedback, FieldMessage } from "@/components/catalog/action-feedback";
 import type { CatalogActionState } from "@/lib/catalog/action-utils";
 import {
@@ -48,9 +49,9 @@ function MenuItemCard({ item, currency, ingredients, recipe }: { item: MenuItemV
             <input type="hidden" name="isActive" value={String(!item.isActive)} />
             <button disabled={toggling} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50">{item.isActive ? "Deactivate" : "Activate"}</button>
           </form>
-          <form action={deleteAction} onSubmit={(event) => { if (!window.confirm(`Delete ${item.name}? This cannot be undone.`)) event.preventDefault(); }}>
+          <form action={deleteAction}>
             <input type="hidden" name="menuItemId" value={item.id} />
-            <button disabled={deleting} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 disabled:opacity-50">Delete</button>
+            <ConfirmSubmitButton pending={deleting} label="Delete" confirmLabel="Delete menu item" message={`Delete ${item.name}? This cannot be undone.`} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 disabled:opacity-50" />
           </form>
         </div>
       </div>

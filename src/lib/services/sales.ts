@@ -9,6 +9,7 @@ import {
 import { getRestaurantById } from "@/lib/services/restaurant";
 import type { DateRangeInput, SerializableDateRange } from "@/lib/services/types";
 import { assertDateRange, assertLimit } from "@/lib/services/validation";
+import { calculateAverageOrderValue, normalizeOrderTypeBreakdown, rankSalesItems } from "@/lib/sales/calculations";
 
 function serializableRange(input: DateRangeInput): SerializableDateRange {
   return { start: input.start.toISOString(), end: input.end.toISOString() };
@@ -60,7 +61,7 @@ export async function getOrderSummary(input: DateRangeInput) {
     completedOrders,
     cancelledOrders,
     completedRevenue,
-    averageCompletedOrderValue: completedOrders ? completedRevenue / completedOrders : 0,
+    averageCompletedOrderValue: calculateAverageOrderValue(completedRevenue, completedOrders),
     byStatus,
   };
 }
@@ -98,6 +99,11 @@ export async function getTopSellingItems(input: DateRangeInput & {
   const limit = input.limit ?? 10;
   const rankBy = input.rankBy ?? "revenue";
   assertLimit(limit);
+  const dataset = await getTopSellingDataset(input);
+  return rankSalesItems(dataset, rankBy, limit);
+}
+
+async function getTopSellingDataset(input: DateRangeInput) {
   const grouped = await prisma.orderItem.groupBy({
     by: ["menuItemId"],
     where: {
@@ -118,16 +124,43 @@ export async function getTopSellingItems(input: DateRangeInput & {
   });
   const menuById = new Map(menuItems.map((item) => [item.id, item]));
 
-  return grouped
-    .map((item) => ({
+  return grouped.map((item) => ({
       menuItemId: item.menuItemId,
       name: menuById.get(item.menuItemId)?.name ?? "Unknown item",
       category: menuById.get(item.menuItemId)?.category ?? "Unknown",
       quantity: item._sum.quantity ?? 0,
       revenue: item._sum.totalPrice?.toNumber() ?? 0,
-    }))
-    .sort((a, b) => b[rankBy] - a[rankBy])
-    .slice(0, limit);
+    }));
+}
+
+export async function getTopSellingItemRankings(input: DateRangeInput & { limit?: number }) {
+  assertDateRange(input);
+  const limit = input.limit ?? 10;
+  assertLimit(limit);
+  const dataset = await getTopSellingDataset(input);
+  return {
+    byRevenue: rankSalesItems(dataset, "revenue", limit),
+    byQuantity: rankSalesItems(dataset, "quantity", limit),
+  };
+}
+
+export async function getOrderTypeBreakdown(input: DateRangeInput) {
+  assertDateRange(input);
+  const groups = await prisma.order.groupBy({
+    by: ["orderType"],
+    where: {
+      restaurantId: input.restaurantId,
+      status: OrderStatus.COMPLETED,
+      createdAt: { gte: input.start, lt: input.end },
+    },
+    _count: true,
+    _sum: { total: true },
+  });
+  return normalizeOrderTypeBreakdown(groups.map((group) => ({
+    orderType: group.orderType,
+    orderCount: group._count,
+    revenue: group._sum.total?.toNumber() ?? 0,
+  })));
 }
 
 export async function getSalesByHour(input: DateRangeInput) {

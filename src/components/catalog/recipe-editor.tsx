@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
+import { ConfirmSubmitButton } from "@/components/ui/confirm-action";
 import { ActionFeedback, FieldMessage } from "@/components/catalog/action-feedback";
 import type { CatalogActionState } from "@/lib/catalog/action-utils";
 import { addRecipeItemAction, removeRecipeItemAction, updateRecipeItemAction } from "@/lib/recipes/actions";
@@ -15,7 +16,7 @@ function RecipeRow({ item }: { item: RecipeView }) {
   const [removeState, removeAction, removing] = useActionState(removeRecipeItemAction, initialState);
   return <li className="rounded-lg border border-slate-100 bg-slate-50/70 p-3">
     <div className="flex items-center justify-between gap-3"><div><p className="text-sm font-semibold text-slate-800">{item.ingredientName}</p><p className="text-xs text-slate-500">Measured in {item.unit}</p></div>
-      <form action={removeAction} onSubmit={(event) => { if (!window.confirm(`Remove ${item.ingredientName} from this recipe?`)) event.preventDefault(); }}><input type="hidden" name="recipeItemId" value={item.id} /><button disabled={removing} className="text-xs font-semibold text-rose-600 disabled:opacity-50">Remove</button></form></div>
+      <form action={removeAction}><input type="hidden" name="recipeItemId" value={item.id} /><ConfirmSubmitButton pending={removing} label="Remove" confirmLabel="Remove ingredient" message={`Remove ${item.ingredientName} from this recipe?`} className="text-xs font-semibold text-rose-600 disabled:opacity-50" /></form></div>
     <form action={editAction} className="mt-3 flex flex-wrap items-start gap-2"><input type="hidden" name="recipeItemId" value={item.id} /><div><input aria-label={`Quantity of ${item.ingredientName}`} name="quantityRequired" type="number" min="0.001" step="0.001" defaultValue={item.quantityRequired} className={`${fieldClass} w-32`} /><FieldMessage message={editState.fieldErrors?.quantityRequired} /></div><span className="py-2 text-sm text-slate-500">{item.unit}</span><button disabled={editing} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50">Save</button></form>
     <ActionFeedback state={editState} /><ActionFeedback state={removeState} />
   </li>;
