@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ConfirmButton, ConfirmSubmitButton } from "../confirm-action";
+import { ConfirmButton, ConfirmSubmitButton, submitOwningForm } from "../confirm-action";
 
 test("destructive form actions require an explicit in-product confirmation step", () => {
   const html = renderToStaticMarkup(<form><ConfirmSubmitButton label="Delete" message="Delete this record?" /></form>);
@@ -14,4 +14,12 @@ test("callback actions also begin as non-submitting controls", () => {
   const html = renderToStaticMarkup(<ConfirmButton label="Reject" message="Reject this proposal?" onConfirm={() => undefined} />);
   assert.match(html, /type="button"/);
   assert.doesNotMatch(html, /window\.confirm/);
+});
+
+test("confirmed form actions explicitly submit their owning form", () => {
+  let submissions = 0;
+  submitOwningForm({ form: { requestSubmit: () => { submissions += 1; } } });
+  assert.equal(submissions, 1);
+  submitOwningForm({ form: null });
+  assert.equal(submissions, 1);
 });

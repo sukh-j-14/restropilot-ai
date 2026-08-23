@@ -11,6 +11,10 @@ type SharedProps = {
   confirmClassName?: string;
 };
 
+export function submitOwningForm(control: { form: { requestSubmit: () => void } | null }) {
+  control.form?.requestSubmit();
+}
+
 export function ConfirmSubmitButton({
   label,
   confirmLabel = "Confirm",
@@ -27,7 +31,7 @@ export function ConfirmSubmitButton({
 
   return <span role="group" aria-label={message} className="inline-flex flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 p-2">
     <span className="max-w-64 text-xs text-amber-900">{message}</span>
-    <button type="submit" disabled={pending} onClick={() => setConfirming(false)} className={confirmClassName ?? className}>{pending ? "Working…" : confirmLabel}</button>
+    <button type="button" disabled={pending} onClick={(event) => submitOwningForm(event.currentTarget)} className={confirmClassName ?? className}>{pending ? "Working…" : confirmLabel}</button>
     <button type="button" disabled={pending} onClick={() => setConfirming(false)} className="rounded-md px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-white">Keep</button>
   </span>;
 }
