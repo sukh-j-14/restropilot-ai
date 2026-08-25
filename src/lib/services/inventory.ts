@@ -1,6 +1,6 @@
 import "server-only";
 
-import { OrderStatus, Prisma } from "@/generated/prisma/client";
+import { InventoryMovementType, OrderStatus, Prisma } from "@/generated/prisma/client";
 import { ingredientDeletionBlockReason } from "@/lib/catalog/deletion-policy";
 import { prisma } from "@/lib/prisma";
 import {
@@ -19,6 +19,7 @@ import {
   assertIdentifier,
   assertRestaurantId,
 } from "@/lib/services/validation";
+import { recordInventoryMovement } from "@/lib/services/inventory-movements";
 
 function toStockItem(ingredient: {
   id: string;
@@ -120,8 +121,11 @@ export async function createIngredient(input: IngredientMutationInput) {
   assertRestaurantId(input.restaurantId);
   await assertUniqueIngredientName(input.restaurantId, input.name);
   try {
-    const ingredient = await prisma.ingredient.create({ data: input });
-    return toStockItem(ingredient);
+    return await prisma.$transaction(async (transaction) => {
+      const ingredient = await transaction.ingredient.create({ data: input });
+      if (ingredient.currentStock.isPositive()) await recordInventoryMovement(transaction, { restaurantId: input.restaurantId, ingredientId: ingredient.id, type: InventoryMovementType.INITIAL, quantityDelta: ingredient.currentStock, stockBefore: 0, stockAfter: ingredient.currentStock, reason: "Initial inventory" });
+      return toStockItem(ingredient);
+    });
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
       throw new CatalogDuplicateError("An ingredient with this name already exists.");
@@ -135,17 +139,17 @@ export async function updateIngredient(input: IngredientMutationInput & { ingred
   assertIdentifier(input.ingredientId, "ingredientId");
   const existing = await prisma.ingredient.findFirst({
     where: { id: input.ingredientId, restaurantId: input.restaurantId },
-    select: { id: true },
+    select: { id: true, currentStock: true },
   });
   if (!existing) throw new CatalogNotFoundError("Ingredient not found.");
   await assertUniqueIngredientName(input.restaurantId, input.name, input.ingredientId);
   const { ingredientId, restaurantId, ...data } = input;
   try {
-    const ingredient = await prisma.ingredient.update({
-      where: { id: ingredientId, restaurantId },
-      data,
+    return await prisma.$transaction(async (transaction) => {
+      const ingredient = await transaction.ingredient.update({ where: { id: ingredientId, restaurantId }, data });
+      if (!ingredient.currentStock.equals(existing.currentStock)) await recordInventoryMovement(transaction, { restaurantId, ingredientId, type: InventoryMovementType.ADJUSTMENT, quantityDelta: ingredient.currentStock.minus(existing.currentStock), stockBefore: existing.currentStock, stockAfter: ingredient.currentStock, reason: "Inventory edited in management UI" });
+      return toStockItem(ingredient);
     });
-    return toStockItem(ingredient);
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
       throw new CatalogDuplicateError("An ingredient with this name already exists.");
@@ -163,15 +167,16 @@ export async function deleteIngredient(input: { restaurantId: string; ingredient
       select: { id: true },
     });
     if (!ingredient) throw new CatalogNotFoundError("Ingredient not found.");
-    const [recipeItemCount, purchaseOrderItemCount] = await Promise.all([
+    const [recipeItemCount, purchaseOrderItemCount, movementCount] = await Promise.all([
       transaction.recipeItem.count({
         where: { ingredientId: ingredient.id, ingredient: { restaurantId: input.restaurantId } },
       }),
       transaction.purchaseOrderItem.count({
         where: { ingredientId: ingredient.id, ingredient: { restaurantId: input.restaurantId } },
       }),
+      transaction.inventoryMovement.count({ where: { ingredientId: ingredient.id, restaurantId: input.restaurantId } }),
     ]);
-    const reason = ingredientDeletionBlockReason(recipeItemCount, purchaseOrderItemCount);
+    const reason = ingredientDeletionBlockReason(recipeItemCount, purchaseOrderItemCount, movementCount);
     if (reason) throw new CatalogDeletionBlockedError(reason);
     await transaction.ingredient.deleteMany({
       where: { id: ingredient.id, restaurantId: input.restaurantId },

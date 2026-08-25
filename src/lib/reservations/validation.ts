@@ -11,7 +11,7 @@ export type ReservationFields = {
 
 export type ReservationFieldErrors = Partial<Record<keyof ReservationFields, string>>;
 
-function parseLocalDateTime(value: string, timezone: string) {
+export function parseReservationLocalDateTime(value: string, timezone: string) {
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value.trim());
   if (!match) return null;
   const parts = {
@@ -29,7 +29,7 @@ export function validateReservation(fields: ReservationFields, context: { timezo
   | { success: false; fieldErrors: ReservationFieldErrors } {
   const customerName = fields.customerName.trim();
   const guestCount = /^\d+$/.test(fields.guestCount.trim()) ? Number(fields.guestCount) : null;
-  const reservationTime = parseLocalDateTime(fields.reservationTime, context.timezone);
+  const reservationTime = parseReservationLocalDateTime(fields.reservationTime, context.timezone);
   const tableNumber = fields.tableNumber.trim();
   const fieldErrors: ReservationFieldErrors = {};
   if (customerName.length < 2 || customerName.length > 120) fieldErrors.customerName = "Guest name must be between 2 and 120 characters.";

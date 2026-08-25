@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/icons";
 import { ThemeControl } from "@/components/theme-control";
 
-const links = [{ label: "Product", href: "#product" }, { label: "How it works", href: "#how-it-works" }, { label: "Features", href: "#features" }, { label: "Pricing", href: "#pricing" }];
+const links = [{ label: "Product", href: "#product" }, { label: "How it works", href: "#how-it-works" }, { label: "Features", href: "#features" }, { label: "Pricing", href: "#pricing" }, { label: "Contact", href: "#contact" }];
 
 export function PublicNavigation({ signedIn }: { signedIn: boolean }) {
   const [open, setOpen] = useState(false);

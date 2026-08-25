@@ -52,6 +52,35 @@ enum ImportType {
 
 enum AIActionProposalType {
   CREATE_PURCHASE_ORDER_DRAFT
+  CREATE_MENU_ITEM
+  UPDATE_MENU_ITEM
+  SET_MENU_ITEM_AVAILABILITY
+  ADD_RECIPE_INGREDIENT
+  UPDATE_RECIPE_INGREDIENT
+  REMOVE_RECIPE_INGREDIENT
+  CREATE_INGREDIENT
+  UPDATE_INGREDIENT
+  ADJUST_INVENTORY_STOCK
+  CREATE_SUPPLIER
+  UPDATE_SUPPLIER
+  CREATE_RESERVATION
+  UPDATE_RESERVATION
+  TRANSITION_RESERVATION_STATUS
+  CREATE_ORDER
+  UPDATE_ORDER_ITEMS
+  TRANSITION_ORDER_STATUS
+  UPDATE_RESTAURANT_SETTINGS
+  TRANSITION_PURCHASE_ORDER_STATUS
+}
+
+enum InventoryMovementType {
+  INITIAL
+  RECEIPT
+  USAGE
+  WASTE
+  ADJUSTMENT
+  PURCHASE_ORDER_RECEIPT
+  ORDER_CONSUMPTION
 }
 
 enum AIActionProposalStatus {
@@ -83,6 +112,7 @@ model Restaurant {
   reservations        Reservation[]
   importBatches       ImportBatch[]
   aiActionProposals   AIActionProposal[]
+  inventoryMovements InventoryMovement[]
 
   @@index([name])
 }
@@ -131,9 +161,30 @@ model Ingredient {
   restaurant         Restaurant          @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
   recipeItems        RecipeItem[]
   purchaseOrderItems PurchaseOrderItem[]
+  inventoryMovements InventoryMovement[]
 
   @@unique([restaurantId, name])
   @@index([restaurantId, currentStock])
+}
+
+model InventoryMovement {
+  id                   String                @id @default(cuid())
+  restaurantId         String
+  ingredientId         String
+  type                 InventoryMovementType
+  quantityDelta        Decimal               @db.Decimal(12, 3)
+  stockBefore          Decimal               @db.Decimal(12, 3)
+  stockAfter           Decimal               @db.Decimal(12, 3)
+  reason               String?
+  sourceId             String?
+  createdByClerkUserId String?
+  createdAt            DateTime              @default(now())
+  restaurant           Restaurant            @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  ingredient           Ingredient            @relation(fields: [ingredientId], references: [id], onDelete: Restrict)
+
+  @@index([restaurantId, createdAt])
+  @@index([ingredientId, createdAt])
+  @@index([restaurantId, type, createdAt])
 }
 
 model RecipeItem {
@@ -200,6 +251,7 @@ model AIActionProposal {
   rejectedAt              DateTime?
   executedAt              DateTime?
   executedPurchaseOrderId String?                @unique
+  executedResourceId      String?
   restaurant              Restaurant             @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
   executedPurchaseOrder   PurchaseOrder?         @relation(fields: [executedPurchaseOrderId], references: [id], onDelete: SetNull)
 

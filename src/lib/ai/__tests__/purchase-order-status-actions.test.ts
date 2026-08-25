@@ -1,0 +1,11 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { getAIActionRegistration, getRegisteredAIActionTypes } from "@/lib/ai/action-registry";
+import { validatePurchaseOrderStatusProposalTool } from "@/lib/ai/purchase-order-status-proposal-tool";
+import { purchaseOrderReference, shouldApplyInventory } from "@/lib/purchase-orders/policy";
+
+test("purchase-order lifecycle action is high risk and admin-approved", () => { const registration = getAIActionRegistration("TRANSITION_PURCHASE_ORDER_STATUS"); assert.equal(registration?.handlerKey, "purchase-order-lifecycle"); assert.equal(registration?.policy.riskLevel, "HIGH"); assert.equal(registration?.policy.authorization, "ORGANIZATION_ADMIN"); });
+test("proposal validator rejects direct IDs and unknown actions", () => { assert.equal(validatePurchaseOrderStatusProposalTool({ action_type: "TRANSITION_PURCHASE_ORDER_STATUS", reference: "PO-ABC12345", status: "RECEIVED", explanation: "Delivery arrived." }).status, "RECEIVED"); assert.throws(() => validatePurchaseOrderStatusProposalTool({ action_type: "DELETE_PURCHASE_ORDER", reference: "PO-ABC12345", status: "CANCELLED", explanation: "Delete it." })); assert.throws(() => validatePurchaseOrderStatusProposalTool({ action_type: "TRANSITION_PURCHASE_ORDER_STATUS", purchaseOrderId: "cross-tenant", status: "RECEIVED", explanation: "Receive." })); });
+test("safe references hide full database identifiers", () => { const reference = purchaseOrderReference("cuid-private-prefix-abc12345"); assert.equal(reference, "PO-ABC12345"); assert.equal(reference.includes("private"), false); });
+test("only full receipt transitions have inventory impact", () => { assert.equal(shouldApplyInventory("ORDERED", "PARTIALLY_RECEIVED"), false); assert.equal(shouldApplyInventory("ORDERED", "CANCELLED"), false); assert.equal(shouldApplyInventory("ORDERED", "RECEIVED"), true); assert.equal(shouldApplyInventory("PARTIALLY_RECEIVED", "RECEIVED"), true); });
+test("no permanent purchase-order delete action is registered", () => { assert.equal(getRegisteredAIActionTypes().includes("TRANSITION_PURCHASE_ORDER_STATUS"), true); assert.equal(getRegisteredAIActionTypes().some((type) => type.includes("DELETE_PURCHASE_ORDER")), false); });

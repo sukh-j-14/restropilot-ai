@@ -3,12 +3,23 @@ import "server-only";
 import { request as httpsRequest } from "node:https";
 import { logAIOrchestration } from "@/lib/ai/diagnostics";
 import { AIManagerError } from "@/lib/ai/errors";
+import { assertNoProviderProtocolText } from "@/lib/ai/provider-protocol";
 import type { AIProvider, AIProviderMessage, AIProviderRequest, AIProviderResponse } from "@/lib/ai/types";
 
-type GeminiPart = { text?: unknown; thought?: unknown; thoughtSignature?: unknown; functionCall?: { name?: unknown; args?: unknown } };
+type GeminiPart = { text?: unknown; thought?: unknown; thoughtSignature?: unknown; functionCall?: { id?: unknown; name?: unknown; args?: unknown } };
 type GeminiResponse = { candidates?: Array<{ finishReason?: unknown; content?: { parts?: GeminiPart[] } }> };
 type GeminiContent = { role: "user" | "model"; parts: Array<Record<string, unknown>> };
 const MAX_PROVIDER_RESPONSE_BYTES = 2_000_000;
+
+export function classifyGeminiHTTPError(payload: unknown): string {
+  const error = payload && typeof payload === "object" && "error" in payload ? (payload as { error?: unknown }).error : undefined;
+  const record = error && typeof error === "object" ? error as Record<string, unknown> : {};
+  const message = typeof record.message === "string" ? record.message.toLowerCase() : "";
+  if (/function|tool|schema|parameter/.test(message)) return "INVALID_TOOL_REQUEST";
+  if (/thought|thinking/.test(message)) return "INVALID_THINKING_CONFIG";
+  if (/model/.test(message)) return "INVALID_MODEL";
+  return typeof record.status === "string" ? record.status : "HTTP_ERROR";
+}
 
 function safeJSON(value: string, fallback: Record<string, unknown>) {
   try {
@@ -20,11 +31,16 @@ function safeJSON(value: string, fallback: Record<string, unknown>) {
 export function toGeminiSchema(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(toGeminiSchema);
   if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+  const record = value as Record<string, unknown>;
+  const nullableType = Array.isArray(record.type) && record.type.length === 2 && record.type.includes("null")
+    ? record.type.find((item) => item !== "null")
+    : undefined;
+  return Object.fromEntries(Object.entries(record)
     // Gemini FunctionDeclaration accepts a selected OpenAPI Schema subset.
     // Keep stricter rules in server validation when a keyword is unsupported.
-    .filter(([key]) => key !== "additionalProperties" && key !== "exclusiveMinimum" && key !== "exclusiveMaximum")
-    .map(([key, item]) => [key, toGeminiSchema(item)]));
+    .filter(([key]) => key !== "additionalProperties" && key !== "exclusiveMinimum" && key !== "exclusiveMaximum" && !(key === "type" && nullableType))
+    .map(([key, item]) => [key, toGeminiSchema(item)])
+    .concat(nullableType ? [["type", nullableType], ["nullable", true]] : []));
 }
 
 function toGeminiContents(messages: AIProviderMessage[]) {
@@ -42,11 +58,11 @@ function toGeminiContents(messages: AIProviderMessage[]) {
       const parts: GeminiContent["parts"] = [];
       if (message.content) parts.push({ text: message.content });
       for (const call of message.toolCalls ?? []) parts.push({
-        functionCall: { name: call.name, args: safeJSON(call.arguments, {}) },
+        functionCall: { id: call.id, name: call.name, args: safeJSON(call.arguments, {}) },
         ...(call.providerMetadata?.geminiThoughtSignature ? { thoughtSignature: call.providerMetadata.geminiThoughtSignature } : {}),
       });
       if (parts.length) append("model", parts);
-    } else if (message.role === "tool") append("user", [{ functionResponse: { name: message.name, response: safeJSON(message.content, { result: message.content }) } }]);
+    } else if (message.role === "tool") append("user", [{ functionResponse: { id: message.toolCallId, name: message.name, response: safeJSON(message.content, { result: message.content }) } }]);
   }
   return { system, contents };
 }
@@ -87,13 +103,13 @@ function translateResponse(payload: unknown, model: string, nextCallId: () => st
   const candidate = (payload as GeminiResponse).candidates?.[0];
   const parts = candidate?.content?.parts;
   if (!candidate || !Array.isArray(parts)) throw new AIManagerError("INVALID_RESPONSE", "Gemini response did not contain a candidate.");
-  const content = parts.flatMap((part) => typeof part.text === "string" && part.thought !== true ? [part.text] : []).join("");
+  const content = assertNoProviderProtocolText(parts.flatMap((part) => typeof part.text === "string" && part.thought !== true ? [part.text] : []).join(""));
   const toolCalls = parts.flatMap((part) => {
     const call = part.functionCall;
     if (!call) return [];
     if (typeof call.name !== "string" || !call.args || typeof call.args !== "object" || Array.isArray(call.args)) throw new AIManagerError("INVALID_RESPONSE", "Gemini returned a malformed function call.");
     return [{
-      id: nextCallId(),
+      id: typeof call.id === "string" && call.id ? call.id : nextCallId(),
       name: call.name,
       arguments: JSON.stringify(call.args),
       ...(typeof part.thoughtSignature === "string" ? { providerMetadata: { geminiThoughtSignature: part.thoughtSignature } } : {}),
@@ -121,9 +137,8 @@ export function createGeminiProvider(environment: NodeJS.ProcessEnv = process.en
           toolConfig: { functionCallingConfig: { mode: request.toolChoice === "none" ? "NONE" : "AUTO" } },
         } : {}),
         generationConfig: {
-          temperature: 0.2,
           maxOutputTokens: request.maxOutputTokens,
-          thinkingConfig: model.includes("2.5") ? { thinkingBudget: 0 } : { thinkingLevel: "LOW" },
+          thinkingConfig: model.includes("2.5") ? { thinkingBudget: 0 } : { thinkingLevel: model.includes("flash-lite") ? "MINIMAL" : "LOW" },
         },
       });
       let response: { status: number; payload?: unknown };
@@ -134,10 +149,10 @@ export function createGeminiProvider(environment: NodeJS.ProcessEnv = process.en
         throw new AIManagerError("PROVIDER", "Gemini request failed.");
       }
       if (response.status < 200 || response.status >= 300) {
-        logAIOrchestration({ stage: "provider_http_error", provider: "gemini", status: response.status });
+        logAIOrchestration({ stage: "provider_http_error", provider: "gemini", status: response.status, category: classifyGeminiHTTPError(response.payload) });
         if (response.status === 429) throw new AIManagerError("RATE_LIMIT", "Gemini rate limit reached.");
         if (response.status === 408 || response.status === 504) throw new AIManagerError("TIMEOUT", "Gemini request timed out.");
-        throw new AIManagerError("PROVIDER", `Gemini request failed with status ${response.status}.`);
+        throw new AIManagerError("PROVIDER", `Gemini request failed: ${classifyGeminiHTTPError(response.payload)}.`);
       }
       return translateResponse(response.payload, model, () => `gemini-call-${++callSequence}`);
     },

@@ -9,8 +9,8 @@ import { supplierDeletionBlockReason } from "@/lib/suppliers/policy";
 type SupplierInput = { restaurantId: string; name: string; email: string; phone: string };
 const serialize = (supplier: { id: string; name: string; email: string | null; phone: string | null; createdAt: Date; updatedAt: Date }) => ({ ...supplier, createdAt: supplier.createdAt.toISOString(), updatedAt: supplier.updatedAt.toISOString() });
 
-async function assertUniqueName(restaurantId: string, name: string, excludeId?: string) {
-  const duplicate = await prisma.supplier.findFirst({ where: { restaurantId, name: { equals: name, mode: "insensitive" }, ...(excludeId ? { id: { not: excludeId } } : {}) }, select: { id: true } });
+async function assertUniqueName(client: Prisma.TransactionClient | typeof prisma, restaurantId: string, name: string, excludeId?: string) {
+  const duplicate = await client.supplier.findFirst({ where: { restaurantId, name: { equals: name, mode: "insensitive" }, ...(excludeId ? { id: { not: excludeId } } : {}) }, select: { id: true } });
   if (duplicate) throw new CatalogDuplicateError("A supplier with this name already exists.");
 }
 
@@ -21,7 +21,7 @@ export async function listSuppliers(input: { restaurantId: string }) {
 
 export async function createSupplier(input: SupplierInput) {
   assertRestaurantId(input.restaurantId);
-  await assertUniqueName(input.restaurantId, input.name);
+  await assertUniqueName(prisma, input.restaurantId, input.name);
   try {
     return serialize(await prisma.supplier.create({ data: { restaurantId: input.restaurantId, name: input.name, email: input.email || null, phone: input.phone || null } }));
   } catch (error) {
@@ -30,12 +30,26 @@ export async function createSupplier(input: SupplierInput) {
   }
 }
 
+export async function createSupplierInTransaction(transaction: Prisma.TransactionClient, input: SupplierInput) {
+  assertRestaurantId(input.restaurantId);
+  await assertUniqueName(transaction, input.restaurantId, input.name);
+  return serialize(await transaction.supplier.create({ data: { restaurantId: input.restaurantId, name: input.name, email: input.email || null, phone: input.phone || null } }));
+}
+
 export async function updateSupplier(input: SupplierInput & { supplierId: string }) {
   assertRestaurantId(input.restaurantId); assertIdentifier(input.supplierId, "supplierId");
   const existing = await prisma.supplier.findFirst({ where: { id: input.supplierId, restaurantId: input.restaurantId }, select: { id: true } });
   if (!existing) throw new CatalogNotFoundError("Supplier not found.");
-  await assertUniqueName(input.restaurantId, input.name, input.supplierId);
+  await assertUniqueName(prisma, input.restaurantId, input.name, input.supplierId);
   return serialize(await prisma.supplier.update({ where: { id: input.supplierId, restaurantId: input.restaurantId }, data: { name: input.name, email: input.email || null, phone: input.phone || null } }));
+}
+
+export async function updateSupplierInTransaction(transaction: Prisma.TransactionClient, input: SupplierInput & { supplierId: string }) {
+  assertRestaurantId(input.restaurantId); assertIdentifier(input.supplierId, "supplierId");
+  const existing = await transaction.supplier.findFirst({ where: { id: input.supplierId, restaurantId: input.restaurantId }, select: { id: true } });
+  if (!existing) throw new CatalogNotFoundError("Supplier not found.");
+  await assertUniqueName(transaction, input.restaurantId, input.name, input.supplierId);
+  return serialize(await transaction.supplier.update({ where: { id: input.supplierId, restaurantId: input.restaurantId }, data: { name: input.name, email: input.email || null, phone: input.phone || null } }));
 }
 
 export async function deleteSupplier(input: { restaurantId: string; supplierId: string }) {

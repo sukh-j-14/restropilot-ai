@@ -4,8 +4,9 @@ export function menuItemDeletionBlockReason(orderItemCount: number) {
     : null;
 }
 
-export function ingredientDeletionBlockReason(recipeItemCount: number, purchaseOrderItemCount: number) {
+export function ingredientDeletionBlockReason(recipeItemCount: number, purchaseOrderItemCount: number, movementCount = 0) {
   if (recipeItemCount > 0) return "This ingredient is used in one or more recipes and cannot be deleted.";
   if (purchaseOrderItemCount > 0) return "This ingredient appears in purchase-order history and cannot be deleted.";
+  if (movementCount > 0) return "This ingredient has inventory movement history and cannot be deleted.";
   return null;
 }

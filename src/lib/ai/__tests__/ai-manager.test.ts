@@ -3,7 +3,7 @@ import test from "node:test";
 import { AIManagerError, safeAIErrorMessage } from "../errors";
 import { buildBrowserConversationHistory } from "../history";
 import { MAX_HISTORY_MESSAGES, MAX_TOOL_ROUNDS, MAX_USER_MESSAGE_LENGTH, validateConversationInput } from "../limits";
-import { runAIToolLoop, validateFinalAnswer } from "../orchestrator";
+import { isCollectionInterimText, missingRequiredEvidence, runAIToolLoop, validateFinalAnswer } from "../orchestrator";
 import { resolveProviderConfiguration } from "../provider-config";
 import { createFallbackProvider } from "../providers/fallback";
 import { serializeToolResult } from "../serialization";
@@ -11,6 +11,10 @@ import { getReadOnlyToolContractNames, getReadOnlyToolContracts, validateReadOnl
 import type { AIProvider, AIProviderRequest, AIProviderResponse, AIRestaurantContext } from "../types";
 import { validateProposalCandidate } from "../action-proposal-validation";
 import { PURCHASE_ORDER_PROPOSAL_TOOL, purchaseOrderProposalToolDefinition } from "../proposal-tool";
+import { assertNoProviderProtocolText, safeAssistantDisplayText } from "../provider-protocol";
+import { getAIEvidenceLinks } from "../evidence";
+import { resolveUniqueOperationalName } from "../name-resolution";
+import { toGeminiSchema } from "../providers/gemini";
 
 const restaurant: AIRestaurantContext = { id: "internal-tenant-id", name: "Test Kitchen", timezone: "Asia/Kolkata", currency: "INR", guestCapacity: 80 };
 const tool = (id: string, name: string, args: unknown): AIProviderResponse => ({ content: "", toolCalls: [{ id, name, arguments: typeof args === "string" ? args : JSON.stringify(args) }], finishReason: "tool_calls" });
@@ -58,6 +62,37 @@ test("fallback runs only for provider failures and clears provider-specific mode
   assert.equal(fallbackCalled, false);
 });
 
+test("one orchestration session stays on one fallback model after primary failure", async () => {
+  let primaryCalls = 0;
+  const fallbackModels: Array<string | undefined> = [];
+  const primary: AIProvider = { name: "primary", async generate() { primaryCalls += 1; throw new AIManagerError("PROVIDER", "unavailable"); } };
+  const fallback: AIProvider = { name: "fallback", async generate(request) { fallbackModels.push(request.preferredModel); return { content: "ok", toolCalls: [], finishReason: "stop", selectedModel: "fallback/model-a" }; } };
+  const session = createFallbackProvider(primary, fallback).createSession!();
+  const request: AIProviderRequest = { messages: [{ role: "user", content: "hello" }], tools: [], toolChoice: "none", maxOutputTokens: 100, timeoutMs: 1_000 };
+  await session.generate(request);
+  await session.generate(request);
+  assert.equal(primaryCalls, 1);
+  assert.deepEqual(fallbackModels, [undefined, "fallback/model-a"]);
+});
+
+test("operational questions require minimum evidence before synthesis", () => {
+  assert.deepEqual(missingRequiredEvidence("What should I reorder?", ["get_low_stock_items"]), ["existing purchase orders"]);
+  assert.deepEqual(missingRequiredEvidence("Are we ready for Friday night?", []), ["reservations", "inventory", "existing purchase orders"]);
+  assert.deepEqual(missingRequiredEvidence("Are we ready for Friday night?", ["get_reservation_summary", "get_low_stock_items", "list_purchase_orders"]), []);
+  assert.equal(isCollectionInterimText("Collection complete."), true);
+  assert.equal(isCollectionInterimText("Paneer is at 0 kg and needs attention."), false);
+});
+
+test("proposal resource spelling fallback is deterministic and ambiguity-safe", () => {
+  assert.equal(resolveUniqueOperationalName([{ name: "Panneer" }], "Paneer")?.name, "Panneer");
+  assert.equal(resolveUniqueOperationalName([{ name: "Paneer" }, { name: "Panneer" }], "Paneeer"), undefined);
+  assert.equal(resolveUniqueOperationalName([{ name: "Onion" }], "Tomato"), undefined);
+});
+
+test("Gemini schema conversion represents optional null fields compatibly", () => {
+  assert.deepEqual(toGeminiSchema({ type: ["string", "null"], maxLength: 40 }), { maxLength: 40, type: "string", nullable: true });
+});
+
 test("strict tool contracts validate dates, limits, enums, and extra fields", () => {
   const valid = validateReadOnlyToolArguments("get_top_selling_items", { start_date: "2026-08-01", end_date: "2026-08-21", limit: 5, ranking_mode: "revenue" }, restaurant) as { limit: number };
   assert.equal(valid.limit, 5);
@@ -71,7 +106,7 @@ test("allowlist contains only the approved read-only tools", () => {
   const names = getReadOnlyToolContractNames();
   assert.ok(names.includes("get_low_stock_items"));
   assert.ok(names.includes("list_purchase_orders"));
-  assert.equal(names.length, 19);
+  assert.equal(names.length, 35);
   assert.ok(names.includes("list_menu_items"));
   assert.ok(names.includes("list_recipes"));
   assert.ok(names.includes("list_suppliers"));
@@ -100,7 +135,7 @@ test("proposal metadata remains separate from the assistant answer and browser h
   const args = { supplier_name: "Dairy Supplier", items: [{ ingredient_name: "Paneer", quantity: 12 }], explanation: "Low stock." };
   const provider = new SequenceProvider([tool("proposal", PURCHASE_ORDER_PROPOSAL_TOOL, args), { content: "I recommend reviewing a draft purchase order.", toolCalls: [], finishReason: "stop" }, { content: "**PROPOSED ACTION**\nReview the purchase-order draft below.", toolCalls: [], finishReason: "stop" }]);
   const result = await runAIToolLoop({ provider, restaurant, history: [], message: "What should I do about Paneer?", toolDefinitions: [...getReadOnlyToolContracts(), purchaseOrderProposalToolDefinition], executeTool: async ({ name, arguments: value }) => ({ content: "{\"accepted\":true}", activity: "Preparing...", ...(name === PURCHASE_ORDER_PROPOSAL_TOOL ? { proposalCandidate: validateProposalCandidate(value) } : {}) }) });
-  assert.equal(result.proposalCandidate?.supplierName, "Dairy Supplier");
+  assert.equal(result.proposalCandidate && "supplierName" in result.proposalCandidate ? result.proposalCandidate.supplierName : undefined, "Dairy Supplier");
   assert.doesNotMatch(result.answer, /supplier_name|ingredient_name|proposalCandidate/);
   const history = buildBrowserConversationHistory([{ role: "assistant", content: result.answer, actionProposal: result.proposalCandidate }]);
   assert.deepEqual(history, [{ role: "assistant", content: result.answer }]);
@@ -118,7 +153,7 @@ test("multi-tool loop injects trusted tenant context and returns approved activi
   assert.deepEqual(result.toolsUsed, executed);
   assert.doesNotMatch(result.answer, /Maybe|Perhaps/);
   assert.equal(provider.requests.at(-1)?.toolChoice, "none");
-  assert.equal(provider.requests.at(-1)?.tools.length, getReadOnlyToolContracts().length);
+  assert.equal(provider.requests.at(-1)?.tools.length, 0);
   assert.equal(provider.requests.at(-1)?.preferredModel, "example/tool-capable-model");
   const system = provider.requests[0].messages[0];
   assert.equal(system.role, "system");
@@ -133,30 +168,31 @@ test("unknown and malformed calls never reach an approved executor", async () =>
   assert.equal(approvedExecutions, 0);
 });
 
-test("three data rounds finish through a dedicated synthesis call with tools disabled", async () => {
+test("multiple data rounds finish through a dedicated synthesis call without tool declarations", async () => {
   const provider = new SequenceProvider([
     { content: "", toolCalls: [tool("inventory", "get_low_stock_items", {}).toolCalls[0], tool("reservations", "get_reservation_summary", { start_date: "2026-08-21", end_date: "2026-08-21" }).toolCalls[0]], finishReason: "tool_calls" },
     tool("revenue", "get_daily_revenue", { start_date: "2026-08-21", end_date: "2026-08-21" }),
     tool("comparison", "compare_revenue", { current_start_date: "2026-08-21", current_end_date: "2026-08-21", comparison_start_date: "2026-08-20", comparison_end_date: "2026-08-20" }),
+    { content: "Collection complete.", toolCalls: [], finishReason: "stop" },
     { content: "Inventory, reservations, and revenue have been analyzed.", toolCalls: [], finishReason: "stop" },
   ]);
   const executed: string[] = [];
   const result = await runAIToolLoop({ provider, restaurant, history: [], message: "What needs my attention today?", toolDefinitions: getReadOnlyToolContracts(), executeTool: async ({ name }) => { executed.push(name); return { content: "{}", activity: name }; } });
   assert.equal(result.answer, "Inventory, reservations, and revenue have been analyzed.");
   assert.deepEqual(executed, ["get_low_stock_items", "get_reservation_summary", "get_daily_revenue", "compare_revenue"]);
-  assert.equal(provider.requests.length, 4);
+  assert.equal(provider.requests.length, 5);
   assert.ok(provider.requests.slice(0, 3).every((request) => request.tools.length === getReadOnlyToolContracts().length));
-  assert.equal(provider.requests[3].tools.length, getReadOnlyToolContracts().length);
-  assert.equal(provider.requests[3].toolChoice, "none");
+  assert.equal(provider.requests[4].tools.length, 0);
+  assert.equal(provider.requests[4].toolChoice, "none");
 });
 
-test("tool-round exhaustion is bounded even if synthesis requests another tool", async () => {
-  const responses = [...Array.from({ length: MAX_TOOL_ROUNDS }, (_, index) => tool(String(index), "get_revenue", { start_date: `2026-08-0${index + 1}`, end_date: `2026-08-0${index + 1}` })), tool("forbidden-extra", "get_low_stock_items", {})];
+test("tool-round exhaustion is bounded even if synthesis repeatedly requests another tool", async () => {
+  const responses = [...Array.from({ length: MAX_TOOL_ROUNDS }, (_, index) => tool(String(index), "get_revenue", { start_date: `2026-08-0${index + 1}`, end_date: `2026-08-0${index + 1}` })), tool("forbidden-extra", "get_low_stock_items", {}), tool("forbidden-retry", "get_low_stock_items", {})];
   const provider = new SequenceProvider(responses);
   let calls = 0;
   await assert.rejects(() => runAIToolLoop({ provider, restaurant, history: [], message: "Keep going", toolDefinitions: getReadOnlyToolContracts(), executeTool: async () => { calls += 1; return { content: "{}", activity: "Checking sales..." }; } }), (error: unknown) => error instanceof AIManagerError && error.code === "TOOL_ROUND_LIMIT");
   assert.equal(calls, MAX_TOOL_ROUNDS);
-  assert.equal(provider.requests.at(-1)?.tools.length, getReadOnlyToolContracts().length);
+  assert.equal(provider.requests.at(-1)?.tools.length, 0);
   assert.equal(provider.requests.at(-1)?.toolChoice, "none");
 });
 
@@ -212,6 +248,78 @@ test("tool-backed final answer can be used safely in a follow-up request", async
 test("final response rejects serialized provider tool envelopes", () => {
   assert.throws(() => validateFinalAnswer('{"tool_calls":[{"id":"x"}]}'), (error: unknown) => error instanceof AIManagerError && error.code === "INVALID_RESPONSE");
   assert.throws(() => validateFinalAnswer("User Safety: safe\nResponse Safety: safe", "nvidia/nemotron-3.5-content-safety:free"), (error: unknown) => error instanceof AIManagerError && error.code === "INVALID_RESPONSE");
+});
+
+test("provider protocol text is rejected and never becomes visible assistant content", async () => {
+  const leaked = '<dots_function_call><invoke name="list_purchase_orders"></invoke></dots_function_call>';
+  assert.throws(() => assertNoProviderProtocolText(leaked), (error: unknown) => error instanceof AIManagerError && error.code === "INVALID_RESPONSE");
+  assert.throws(() => validateFinalAnswer(leaked), (error: unknown) => error instanceof AIManagerError && error.code === "INVALID_RESPONSE");
+  assert.doesNotMatch(safeAssistantDisplayText(leaked), /dots_function_call|list_purchase_orders/);
+  const provider = new SequenceProvider([{ content: leaked, toolCalls: [], finishReason: "stop" }]);
+  let executions = 0;
+  await assert.rejects(() => runAIToolLoop({ provider, restaurant, history: [], message: "What should I reorder?", toolDefinitions: getReadOnlyToolContracts(), executeTool: async () => { executions += 1; return { content: "{}", activity: "done" }; } }), (error: unknown) => error instanceof AIManagerError && error.code === "INVALID_RESPONSE");
+  assert.equal(executions, 0);
+});
+
+test("a nonessential read failure still permits a grounded partial answer", async () => {
+  const provider = new SequenceProvider([
+    { content: "", toolCalls: [tool("inventory", "get_low_stock_items", {}).toolCalls[0], tool("pos", "list_purchase_orders", {}).toolCalls[0]], finishReason: "tool_calls" },
+    { content: "Enough data collected.", toolCalls: [], finishReason: "stop" },
+    { content: "Paneer is low. I could not verify incoming purchase orders, so I cannot safely recommend another order yet.", toolCalls: [], finishReason: "stop" },
+  ]);
+  const result = await runAIToolLoop({ provider, restaurant, history: [], message: "What should I reorder?", toolDefinitions: getReadOnlyToolContracts(), executeTool: async ({ name }) => {
+    if (name === "list_purchase_orders") throw new AIManagerError("TOOL_FAILED", "database unavailable");
+    return { content: '{"items":[{"name":"Paneer","currentStock":0,"reorderLevel":10}]}', activity: "Checking inventory" };
+  } });
+  assert.match(result.answer, /Paneer is low/);
+  assert.match(result.answer, /could not verify/i);
+  assert.deepEqual(result.toolsUsed, ["get_low_stock_items"]);
+});
+
+test("provider continuation failure preserves verified tools through fresh synthesis", async () => {
+  const provider = new SequenceProvider([
+    tool("inventory", "get_low_stock_items", {}),
+    new AIManagerError("PROVIDER", "continuation failed"),
+    { content: "Inventory shows Paneer is low. Purchase orders could not be verified.", toolCalls: [], finishReason: "stop" },
+  ]);
+  const result = await runAIToolLoop({ provider, restaurant, history: [], message: "What needs attention?", toolDefinitions: getReadOnlyToolContracts(), executeTool: async () => ({ content: '{"items":[{"name":"Paneer"}]}', activity: "Checking inventory" }) });
+  assert.match(result.answer, /Paneer is low/);
+  assert.deepEqual(result.toolsUsed, ["get_low_stock_items"]);
+  assert.equal(provider.requests.at(-1)?.toolChoice, "none");
+});
+
+test("Paneer handling can complete four evidence rounds and reach the existing proposal tool", async () => {
+  const args = { supplier_name: "Punjab Dairy Supplies", items: [{ ingredient_name: "Paneer", quantity: 15 }], explanation: "Paneer is below its reorder level and no open purchase order covers it." };
+  const provider = new SequenceProvider([
+    tool("ingredient", "get_ingredient_details", { name: "Paneer" }),
+    tool("orders", "list_purchase_orders", {}),
+    tool("supplier", "find_suppliers_for_ingredient", { ingredient_name: "Paneer" }),
+    tool("proposal", PURCHASE_ORDER_PROPOSAL_TOOL, args),
+    { content: "Proposal prepared.", toolCalls: [], finishReason: "stop" },
+    { content: "I prepared a draft purchase-order recommendation for review. Nothing has been ordered.", toolCalls: [], finishReason: "stop" },
+  ]);
+  const result = await runAIToolLoop({ provider, restaurant, history: [], message: "Handle the Paneer issue", toolDefinitions: [...getReadOnlyToolContracts(), purchaseOrderProposalToolDefinition], executeTool: async ({ name, arguments: value }) => ({ content: '{"accepted":true}', activity: name, ...(name === PURCHASE_ORDER_PROPOSAL_TOOL ? { proposalCandidate: validateProposalCandidate(value) } : {}) }) });
+  assert.ok(result.proposalCandidate);
+  assert.match(result.answer, /prepared/i);
+  assert.equal(provider.requests.at(-1)?.tools.length, 0);
+});
+
+test("an existing open purchase order produces analysis without a duplicate proposal", async () => {
+  const provider = new SequenceProvider([
+    { content: "", toolCalls: [tool("inventory", "get_ingredient_details", { name: "Paneer" }).toolCalls[0], tool("orders", "list_purchase_orders", { status: "ORDERED" }).toolCalls[0]], finishReason: "tool_calls" },
+    { content: "No more data needed.", toolCalls: [], finishReason: "stop" },
+    { content: "Paneer is low, but an open order already has 15 kg incoming. Review or expedite that order instead of creating a duplicate.", toolCalls: [], finishReason: "stop" },
+  ]);
+  const result = await runAIToolLoop({ provider, restaurant, history: [], message: "Handle the Paneer issue", toolDefinitions: [...getReadOnlyToolContracts(), purchaseOrderProposalToolDefinition], executeTool: async ({ name }) => ({ content: name === "list_purchase_orders" ? '{"orders":[{"status":"ORDERED","items":[{"ingredient":"Paneer","quantity":15}]}]}' : '{"name":"Paneer","currentStock":3,"reorderLevel":10}', activity: name }) });
+  assert.equal(result.proposalCandidate, undefined);
+  assert.match(result.answer, /instead of creating a duplicate/i);
+});
+
+test("internal tool names become bounded user-facing evidence navigation", () => {
+  assert.deepEqual(getAIEvidenceLinks(["get_low_stock_items", "get_inventory_status", "list_purchase_orders", "run_sql"]), [
+    { label: "Inventory", href: "/inventory" },
+    { label: "Purchase orders", href: "/purchase-orders" },
+  ]);
 });
 
 test("provider errors map to safe browser messages", async () => {

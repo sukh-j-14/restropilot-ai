@@ -19,10 +19,12 @@ export type AIProviderResponse = { content: string; toolCalls: AIToolCall[]; fin
 export interface AIProvider {
   readonly name: string;
   generate(request: AIProviderRequest): Promise<AIProviderResponse>;
+  /** Isolates provider/model affinity to one orchestration request. */
+  createSession?(): AIProvider;
   stream?(request: AIProviderRequest): AsyncIterable<string>;
 }
 
 export type AIRestaurantContext = { id: string; name: string; timezone: string; currency: string; guestCapacity: number | null };
-import type { AIActionProposal, PurchaseOrderProposalCandidate } from "@/lib/ai/action-proposal-types";
+import type { AIActionProposal, AIProposalCandidate } from "@/lib/ai/action-proposal-types";
 export type AIManagerResult = { answer: string; toolsUsed: string[]; activities: string[]; actionProposal?: AIActionProposal | null };
-export type AIOrchestrationResult = Omit<AIManagerResult, "actionProposal"> & { proposalCandidate?: PurchaseOrderProposalCandidate };
+export type AIOrchestrationResult = Omit<AIManagerResult, "actionProposal"> & { proposalCandidate?: AIProposalCandidate };

@@ -2,10 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { CsvParseError, parseCsv, validateCsvFile } from "../../imports/csv";
-import { applyManualMapping, suggestImportMapping } from "../../imports/mapping";
+import { applyManualMapping, mergeImportMappingSuggestions, parseAIImportMappingRequest, suggestImportMapping } from "../../imports/mapping";
+import { buildAIImportMappingContext, parseAIImportMappingResponse, suggestImportMappingsWithAI } from "../../imports/ai-mapping";
 import { normalizeDate, normalizeDecimal, normalizeHistoricalOrderStatus } from "../../imports/normalization";
 import { buildOrderPreview, buildReservationPreview, reservationDuplicateKey } from "../../imports/preview";
 import type { ColumnMapping } from "../../imports/types";
+import type { AIProvider } from "../../ai/types";
 import { canTransitionOrder } from "../../orders/policy";
 
 test("CSV parser detects headers, quoted values, and primitive types", () => {
@@ -36,6 +38,103 @@ test("manual mapping overrides suggestions and clears duplicate targets", () => 
   const overridden = applyManualMapping(mappings, "Ticket", "orderNumber");
   assert.equal(overridden[0].targetField, null);
   assert.deepEqual(overridden[1], { sourceColumn: "Ticket", targetField: "orderNumber", confidence: 1, source: "manual" });
+});
+
+test("AI mapping request rejects browser tenant and internal identifiers", () => {
+  assert.equal(parseAIImportMappingRequest({ csv: "A\n1", importType: "HISTORICAL_ORDERS", restaurantId: "other" }), null);
+  assert.equal(parseAIImportMappingRequest({ csv: "A\n1", importType: "HISTORICAL_ORDERS", organizationId: "other" }), null);
+  assert.deepEqual(parseAIImportMappingRequest({ csv: "A\n1", importType: "HISTORICAL_ORDERS" }), { csv: "A\n1", importType: "HISTORICAL_ORDERS", retry: false });
+});
+
+function mappingProvider(argumentsValue: unknown, onCall?: () => void): AIProvider {
+  return {
+    name: "test-mapper",
+    async generate() {
+      onCall?.();
+      return { content: "", finishReason: "tool_calls", selectedModel: "test", toolCalls: [{ id: "mapping-1", name: "submit_import_mapping_suggestions", arguments: JSON.stringify(argumentsValue) }] };
+    },
+  };
+}
+
+test("AI mapper is skipped when deterministic mappings are high confidence", async () => {
+  const document = parseCsv("Bill No,Txn Date,Dish,Qty,Unit Price\n1,2026-08-20,Paneer,2,100");
+  const heuristic = suggestImportMapping({ headers: document.headers, sampleRows: document.rows, importType: "HISTORICAL_ORDERS" });
+  let calls = 0;
+  const result = await suggestImportMappingsWithAI({ document, importType: "HISTORICAL_ORDERS", heuristicMappings: heuristic.mappings, provider: mappingProvider({}, () => { calls += 1; }) });
+  assert.equal(result.status, "not_needed");
+  assert.equal(calls, 0);
+});
+
+test("AI mapper receives only weak columns and merges an allowed structured suggestion", async () => {
+  const document = parseCsv("Check Ref,Closed On,Product Desc,Count Sold,Each Price\nA1,2026-08-20,Paneer,2,100");
+  const heuristic = suggestImportMapping({ headers: document.headers, sampleRows: document.rows, importType: "HISTORICAL_ORDERS" });
+  const result = await suggestImportMappingsWithAI({
+    document,
+    importType: "HISTORICAL_ORDERS",
+    heuristicMappings: heuristic.mappings,
+    provider: mappingProvider({ mappings: [
+      { sourceColumn: "Check Ref", targetField: "orderNumber", confidence: 0.86 },
+      { sourceColumn: "Closed On", targetField: "createdAt", confidence: 0.82 },
+      { sourceColumn: "Product Desc", targetField: "menuItemName", confidence: 0.88 },
+      { sourceColumn: "Count Sold", targetField: "quantity", confidence: 0.84 },
+      { sourceColumn: "Each Price", targetField: "unitPrice", confidence: 0.9 },
+    ], warnings: [] }),
+  });
+  assert.equal(result.status, "applied");
+  assert.equal(result.mappings.find((mapping) => mapping.sourceColumn === "Check Ref")?.targetField, "orderNumber");
+  assert.equal(result.mappings.find((mapping) => mapping.sourceColumn === "Check Ref")?.source, "ai");
+});
+
+test("AI mapping parser rejects unknown targets and nonexistent source columns", () => {
+  const document = parseCsv("Mystery,When\nvalue,2026-08-20");
+  const heuristic = suggestImportMapping({ headers: document.headers, sampleRows: document.rows, importType: "HISTORICAL_ORDERS" });
+  const context = buildAIImportMappingContext(document, "HISTORICAL_ORDERS", heuristic.mappings)!;
+  assert.throws(() => parseAIImportMappingResponse({ mappings: [{ sourceColumn: "Mystery", targetField: "restaurantId", confidence: 0.9 }], warnings: [] }, context), /invalid target/i);
+  assert.throws(() => parseAIImportMappingResponse({ mappings: [{ sourceColumn: "Not present", targetField: "orderNumber", confidence: 0.9 }], warnings: [] }, context), /invalid source/i);
+});
+
+test("malformed or unavailable AI output falls back to deterministic mappings", async () => {
+  const document = parseCsv("Mystery\nvalue");
+  const heuristic = suggestImportMapping({ headers: document.headers, sampleRows: document.rows, importType: "HISTORICAL_ORDERS" });
+  const malformed = await suggestImportMappingsWithAI({ document, importType: "HISTORICAL_ORDERS", heuristicMappings: heuristic.mappings, provider: mappingProvider({ mappings: "bad", warnings: [] }) });
+  assert.equal(malformed.status, "unavailable");
+  assert.deepEqual(malformed.mappings, heuristic.mappings);
+  const timeoutProvider: AIProvider = { name: "timeout", async generate() { throw new Error("timeout"); } };
+  const timeout = await suggestImportMappingsWithAI({ document, importType: "HISTORICAL_ORDERS", heuristicMappings: heuristic.mappings, provider: timeoutProvider });
+  assert.equal(timeout.status, "unavailable");
+});
+
+test("manual and strong automatic mappings win over AI suggestions", () => {
+  const current: ColumnMapping[] = [
+    { sourceColumn: "Bill", targetField: "orderNumber", confidence: 1, source: "manual" },
+    { sourceColumn: "Other", targetField: null, confidence: 0, source: "heuristic" },
+  ];
+  const merged = mergeImportMappingSuggestions(current, { mappings: [{ sourceColumn: "Other", targetField: "orderNumber", confidence: 0.99, source: "ai" }], warnings: [] });
+  assert.deepEqual(merged.mappings[0], current[0]);
+  assert.equal(merged.mappings[1].targetField, null);
+});
+
+test("duplicate AI target suggestions are reduced to one mapping for review", () => {
+  const current: ColumnMapping[] = [
+    { sourceColumn: "Reference", targetField: null, confidence: 0, source: "heuristic" },
+    { sourceColumn: "Check", targetField: null, confidence: 0, source: "heuristic" },
+  ];
+  const merged = mergeImportMappingSuggestions(current, { mappings: [
+    { sourceColumn: "Reference", targetField: "orderNumber", confidence: 0.7, source: "ai" },
+    { sourceColumn: "Check", targetField: "orderNumber", confidence: 0.9, source: "ai" },
+  ], warnings: [] });
+  assert.equal(merged.mappings.filter((mapping) => mapping.targetField === "orderNumber").length, 1);
+  assert.equal(merged.mappings.find((mapping) => mapping.sourceColumn === "Check")?.targetField, "orderNumber");
+});
+
+test("AI mapping samples are bounded and reservation identity values are minimized", () => {
+  const rows = Array.from({ length: 10 }, (_, index) => `Person ${index},${index + 1},2026-08-${String(index + 10).padStart(2, "0")}`).join("\n");
+  const document = parseCsv(`Patron,Heads,Arrival\n${rows}`);
+  const heuristic = suggestImportMapping({ headers: document.headers, sampleRows: document.rows, importType: "HISTORICAL_RESERVATIONS" });
+  const context = buildAIImportMappingContext(document, "HISTORICAL_RESERVATIONS", heuristic.mappings)!;
+  const patron = context.columns.find((column) => column.sourceColumn === "Patron");
+  assert.deepEqual(patron?.samples, []);
+  assert.ok(context.columns.every((column) => column.samples.length <= 4 && column.samples.every((sample) => sample.length <= 64)));
 });
 
 test("normalization handles currency decimals and safe date formats", () => {

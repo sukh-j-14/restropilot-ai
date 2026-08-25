@@ -1,13 +1,14 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { OrderStatus, Prisma } from "@/generated/prisma/client";
+import { InventoryMovementType, OrderStatus, Prisma } from "@/generated/prisma/client";
 import { aggregateIngredientUsage, calculateOrderTotals, findInventoryShortages, findMissingRecipeItems } from "@/lib/orders/calculations";
 import { getPreparationEligibility, ORDER_TYPES, orderResourceOwnershipError, orderTransitionError, type OrderStatusValue, type OrderTypeValue } from "@/lib/orders/policy";
 import { commitPreparationInventory } from "@/lib/orders/preparation";
 import { prisma } from "@/lib/prisma";
 import { OrderWorkflowError } from "@/lib/services/order-errors";
 import { assertIdentifier, assertRestaurantId } from "@/lib/services/validation";
+import { applyInventoryDeltaInTransaction } from "@/lib/services/inventory-movements";
 
 const orderInclude = { items: { include: { menuItem: { select: { id: true, name: true, restaurantId: true } } }, orderBy: { id: "asc" as const } } } satisfies Prisma.OrderInclude;
 type OrderPayload = Prisma.OrderGetPayload<{ include: typeof orderInclude }>;
@@ -31,9 +32,9 @@ export async function listActiveMenuItemsForOrders(input: { restaurantId: string
   return (await prisma.menuItem.findMany({ where: { restaurantId: input.restaurantId, isActive: true }, select: { id: true, name: true, category: true, price: true }, orderBy: [{ category: "asc" }, { name: "asc" }] })).map((item) => ({ ...item, price: item.price.toNumber() }));
 }
 
-type CreateOrderInput = { restaurantId: string; orderType: OrderTypeValue; discount: string; tax: string; items: Array<{ menuItemId: string; quantity: number }> };
+export type CreateOrderInput = { restaurantId: string; orderType: OrderTypeValue; discount: string; tax: string; items: Array<{ menuItemId: string; quantity: number }> };
 
-export async function createOrder(input: CreateOrderInput) {
+function validateOrderInput(input: CreateOrderInput) {
   assertRestaurantId(input.restaurantId);
   if (!ORDER_TYPES.includes(input.orderType)) throw new OrderWorkflowError("Order type is invalid.");
   try {
@@ -48,31 +49,58 @@ export async function createOrder(input: CreateOrderInput) {
   if (new Set(ids).size !== ids.length) throw new OrderWorkflowError("Each menu item can appear only once in an order.");
   if (input.items.some((item) => !item.menuItemId || !Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 999)) throw new OrderWorkflowError("Order items are invalid.");
 
-  return prisma.$transaction(async (transaction) => {
+}
+
+async function priceLines(transaction: Prisma.TransactionClient, input: CreateOrderInput) {
+    const ids = input.items.map((item) => item.menuItemId);
     const menuItems = await transaction.menuItem.findMany({ where: { id: { in: ids }, restaurantId: input.restaurantId, isActive: true }, select: { id: true, price: true } });
     if (menuItems.length !== input.items.length) throw new OrderWorkflowError("One or more selected menu items are inactive or do not belong to your restaurant.");
     const prices = new Map(menuItems.map((item) => [item.id, item.price]));
     const pricedLines = input.items.map((item) => ({ ...item, unitPrice: prices.get(item.menuItemId)!.toString() }));
     const totals = calculateOrderTotals(pricedLines, input.discount, input.tax);
     if (new Prisma.Decimal(totals.discount).greaterThan(totals.subtotal)) throw new OrderWorkflowError("Discount cannot exceed the subtotal.");
-    const orderNumber = `ORD-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 6).toUpperCase()}`;
-    const order = await transaction.order.create({ data: { restaurantId: input.restaurantId, orderNumber, status: OrderStatus.PENDING, orderType: input.orderType, ...totals, items: { create: pricedLines.map((line) => ({ menuItemId: line.menuItemId, quantity: line.quantity, unitPrice: line.unitPrice, totalPrice: new Prisma.Decimal(line.unitPrice).mul(line.quantity).toDecimalPlaces(2) })) } }, include: orderInclude });
-    return serialize(order);
-  });
+    return { pricedLines, totals };
+}
+
+export async function createOrderInTransaction(transaction: Prisma.TransactionClient, input: CreateOrderInput) {
+  validateOrderInput(input);
+  const { pricedLines, totals } = await priceLines(transaction, input);
+  const orderNumber = `ORD-${new Date().toISOString().slice(0, 10).replaceAll("-", "")}-${randomUUID().slice(0, 6).toUpperCase()}`;
+  const order = await transaction.order.create({ data: { restaurantId: input.restaurantId, orderNumber, status: OrderStatus.PENDING, orderType: input.orderType, ...totals, items: { create: pricedLines.map((line) => ({ menuItemId: line.menuItemId, quantity: line.quantity, unitPrice: line.unitPrice, totalPrice: new Prisma.Decimal(line.unitPrice).mul(line.quantity).toDecimalPlaces(2) })) } }, include: orderInclude });
+  return serialize(order);
+}
+
+export async function createOrder(input: CreateOrderInput) {
+  return prisma.$transaction((transaction) => createOrderInTransaction(transaction, input));
+}
+
+export async function updateOrderItemsInTransaction(transaction: Prisma.TransactionClient, input: CreateOrderInput & { orderId: string; expectedStatus: OrderStatusValue; expectedInventoryConsumedAt: Date | null }) {
+  validateOrderInput(input); assertIdentifier(input.orderId, "orderId");
+  if ((input.expectedStatus !== OrderStatus.PENDING && input.expectedStatus !== OrderStatus.CONFIRMED) || input.expectedInventoryConsumedAt !== null) throw new OrderWorkflowError("Order items can only be changed before preparation begins.");
+  const existing = await transaction.order.findFirst({ where: { id: input.orderId, restaurantId: input.restaurantId }, select: { status: true, inventoryConsumedAt: true } });
+  if (!existing || existing.status !== input.expectedStatus || existing.inventoryConsumedAt !== null) throw new OrderWorkflowError("The order changed since this proposal was created. Generate a fresh proposal.");
+  const { pricedLines, totals } = await priceLines(transaction, input);
+  const claimed = await transaction.order.updateMany({ where: { id: input.orderId, restaurantId: input.restaurantId, status: input.expectedStatus, inventoryConsumedAt: null }, data: { orderType: input.orderType, ...totals } });
+  if (!claimed.count) throw new OrderWorkflowError("The order changed since this proposal was created. Generate a fresh proposal.");
+  await transaction.orderItem.deleteMany({ where: { orderId: input.orderId } });
+  await transaction.orderItem.createMany({ data: pricedLines.map((line) => ({ orderId: input.orderId, menuItemId: line.menuItemId, quantity: line.quantity, unitPrice: line.unitPrice, totalPrice: new Prisma.Decimal(line.unitPrice).mul(line.quantity).toDecimalPlaces(2) })) });
+  const updated = await transaction.order.findFirst({ where: { id: input.orderId, restaurantId: input.restaurantId }, include: orderInclude });
+  if (!updated) throw new OrderWorkflowError("Order not found.");
+  return serialize(updated);
 }
 
 function shortageMessage(shortages: ReturnType<typeof findInventoryShortages>) {
   return `Insufficient inventory: ${shortages.map((item) => `${item.ingredientName} requires ${item.required} ${item.unit}, available ${item.available} ${item.unit}, shortage ${item.shortage} ${item.unit}`).join("; ")}.`;
 }
 
-export async function transitionOrder(input: { restaurantId: string; orderId: string; to: OrderStatusValue }) {
+export async function transitionOrderInTransaction(transaction: Prisma.TransactionClient, input: { restaurantId: string; orderId: string; to: OrderStatusValue; expectedStatus?: OrderStatusValue; expectedInventoryConsumedAt?: Date | null }) {
   assertRestaurantId(input.restaurantId); assertIdentifier(input.orderId, "orderId");
-  return prisma.$transaction(async (transaction) => {
     const order = await transaction.order.findFirst({
       where: { id: input.orderId, restaurantId: input.restaurantId },
       include: { items: { include: { menuItem: { include: { recipeItems: { include: { ingredient: true } } } } } } },
     });
     if (!order) throw new OrderWorkflowError("Order not found.");
+    if (input.expectedStatus !== undefined && (order.status !== input.expectedStatus || order.inventoryConsumedAt?.getTime() !== input.expectedInventoryConsumedAt?.getTime())) throw new OrderWorkflowError("The order changed since this proposal was created. Generate a fresh proposal.");
     const preparationEligibility = getPreparationEligibility(order.status, order.inventoryConsumedAt);
     if (input.to === "PREPARING") {
       if (preparationEligibility === "STALE_CLIENT") throw new OrderWorkflowError("The server is using an outdated Prisma Client. Restart the development server and try again.", "STALE_CLIENT");
@@ -98,7 +126,12 @@ export async function transitionOrder(input: { restaurantId: string; orderId: st
         consumedAt,
         requirements: usage,
         claim: async (timestamp) => (await transaction.order.updateMany({ where: { id: order.id, restaurantId: input.restaurantId, status: OrderStatus.CONFIRMED, inventoryConsumedAt: null }, data: { status: OrderStatus.PREPARING, inventoryConsumedAt: timestamp } })).count === 1,
-        decrement: async (requirement) => (await transaction.ingredient.updateMany({ where: { id: requirement.ingredientId, restaurantId: input.restaurantId, currentStock: { gte: requirement.required } }, data: { currentStock: { decrement: requirement.required } } })).count === 1,
+        decrement: async (requirement) => {
+          try {
+            await applyInventoryDeltaInTransaction(transaction, { restaurantId: input.restaurantId, ingredientId: requirement.ingredientId, delta: new Prisma.Decimal(requirement.required).negated(), type: InventoryMovementType.ORDER_CONSUMPTION, sourceId: order.id, reason: `Order ${order.orderNumber} preparation` });
+            return true;
+          } catch { return false; }
+        },
         onClaimFailed: async () => {
           const current = await transaction.order.findFirst({ where: { id: order.id, restaurantId: input.restaurantId }, select: { status: true, inventoryConsumedAt: true } });
           if (current?.inventoryConsumedAt) throw new OrderWorkflowError("Inventory was already consumed by another preparation request and was not deducted again.", "ALREADY_CONSUMED");
@@ -113,5 +146,8 @@ export async function transitionOrder(input: { restaurantId: string; orderId: st
     const updated = await transaction.order.updateMany({ where: { id: order.id, restaurantId: input.restaurantId, status: order.status }, data: { status: input.to } });
     if (!updated.count) throw new OrderWorkflowError("Order status changed. Refresh and try again.");
     return { orderId: order.id, status: input.to, inventoryConsumed: false, inventoryConsumedAt: order.inventoryConsumedAt?.toISOString() ?? null };
-  });
+}
+
+export async function transitionOrder(input: { restaurantId: string; orderId: string; to: OrderStatusValue }) {
+  return prisma.$transaction((transaction) => transitionOrderInTransaction(transaction, input));
 }

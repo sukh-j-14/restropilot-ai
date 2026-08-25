@@ -2,6 +2,8 @@ import "server-only";
 
 import { AIActionProposalStatus, AIActionProposalType, Prisma } from "@/generated/prisma/client";
 import type { AIActionProposal, PurchaseOrderProposalCandidate, PurchaseOrderProposalDisplay, PurchaseOrderProposalPayload } from "@/lib/ai/action-proposal-types";
+import { getAIActionRegistration } from "@/lib/ai/action-registry";
+import { resolveUniqueOperationalName } from "@/lib/ai/name-resolution";
 import { validatePurchaseOrder, type PurchaseOrderLineFields } from "@/lib/purchase-orders/validation";
 import {
   OPEN_INCOMING_PURCHASE_ORDER_STATUSES,
@@ -12,7 +14,6 @@ import { PurchaseOrderError } from "@/lib/services/purchase-order-errors";
 import { createPurchaseOrderInTransaction } from "@/lib/services/purchase-orders";
 import { assertRestaurantId } from "@/lib/services/validation";
 
-const TTL_MS = 30 * 60 * 1000;
 export type ProposalFailureCode =
   | "PROPOSAL_EXPIRED"
   | "PROPOSAL_NOT_PENDING"
@@ -52,7 +53,8 @@ function parseDisplay(value: Prisma.JsonValue): PurchaseOrderProposalDisplay {
   return value as unknown as PurchaseOrderProposalDisplay;
 }
 function publicProposal(row: { id: string; payloadJson: Prisma.JsonValue; displayJson: Prisma.JsonValue; explanation: string; expiresAt: Date }): AIActionProposal {
-  return { type: "CREATE_PURCHASE_ORDER_DRAFT", proposalId: row.id, title: "Recommended Purchase Order", explanation: row.explanation, expiresAt: row.expiresAt.toISOString(), payload: parsePayload(row.payloadJson), display: parseDisplay(row.displayJson) };
+  const registration = getAIActionRegistration("CREATE_PURCHASE_ORDER_DRAFT")!;
+  return { type: "CREATE_PURCHASE_ORDER_DRAFT", proposalId: row.id, title: registration.title, explanation: row.explanation, riskLevel: registration.policy.riskLevel, approvalRequired: true, status: "PENDING", expiresAt: row.expiresAt.toISOString(), payload: parsePayload(row.payloadJson), display: parseDisplay(row.displayJson) };
 }
 
 export async function preparePurchaseOrderProposal(input: { restaurantId: string; candidate: PurchaseOrderProposalCandidate }) {
@@ -60,13 +62,17 @@ export async function preparePurchaseOrderProposal(input: { restaurantId: string
   const suppliers = await prisma.supplier.findMany({ where: { restaurantId: input.restaurantId }, select: { id: true, name: true }, orderBy: { name: "asc" } });
   const supplier = suppliers.find((item) => item.name.toLocaleLowerCase() === input.candidate.supplierName.toLocaleLowerCase());
   if (!supplier) throw new PurchaseOrderError("The proposed supplier was not found in this restaurant.");
-  const ingredients = await prisma.ingredient.findMany({ where: { restaurantId: input.restaurantId, name: { in: input.candidate.items.map((item) => item.ingredientName), mode: "insensitive" } }, select: { id: true, name: true, unit: true, currentStock: true, reorderLevel: true, costPerUnit: true } });
-  if (ingredients.length !== input.candidate.items.length) throw new PurchaseOrderError("One or more proposed ingredients were not found in this restaurant.");
-  const ids = ingredients.map((item) => item.id);
+  const ingredientCatalog = await prisma.ingredient.findMany({ where: { restaurantId: input.restaurantId }, select: { id: true, name: true, unit: true, currentStock: true, reorderLevel: true, costPerUnit: true }, take: 201 });
+  if (ingredientCatalog.length > 200) throw new PurchaseOrderError("The ingredient catalog is too large for safe name resolution.");
+  const ingredients = input.candidate.items.map((item) => resolveUniqueOperationalName(ingredientCatalog, item.ingredientName));
+  if (ingredients.some((item) => !item)) throw new PurchaseOrderError("One or more proposed ingredients could not be resolved uniquely in this restaurant.");
+  const resolvedIngredients = ingredients.filter((item): item is NonNullable<typeof item> => Boolean(item));
+  if (new Set(resolvedIngredients.map((item) => item.id)).size !== resolvedIngredients.length) throw new PurchaseOrderError("The proposal contains duplicate ingredient lines.");
+  const ids = resolvedIngredients.map((item) => item.id);
   const history = await prisma.purchaseOrderItem.findMany({ where: { ingredientId: { in: ids }, purchaseOrder: { restaurantId: input.restaurantId, supplierId: supplier.id } }, select: { ingredientId: true, unitCost: true }, orderBy: { purchaseOrder: { createdAt: "desc" } } });
   if (suppliers.length > 1 && !history.length) throw new PurchaseOrderError("Supplier selection lacks purchase-history evidence. Ask the owner which supplier to use.");
   const openItems = await prisma.purchaseOrderItem.groupBy({ by: ["ingredientId"], where: { ingredientId: { in: ids }, purchaseOrder: { restaurantId: input.restaurantId, status: { in: [...OPEN_INCOMING_PURCHASE_ORDER_STATUSES] } } }, _sum: { quantity: true } });
-  const blockedIngredient = ingredients.find((ingredient) => {
+  const blockedIngredient = resolvedIngredients.find((ingredient) => {
     const incomingQuantity = openItems.find((item) => item.ingredientId === ingredient.id)?._sum.quantity?.toNumber() ?? 0;
     return !shouldProposePurchaseOrder({ currentStock: ingredient.currentStock.toNumber(), reorderLevel: ingredient.reorderLevel.toNumber(), purchaseOrders: incomingQuantity > 0 ? [{ status: "ORDERED", quantity: incomingQuantity }] : [] }).shouldPropose;
   });
@@ -76,18 +82,19 @@ export async function preparePurchaseOrderProposal(input: { restaurantId: string
     throw new PurchaseOrderError(`${blockedIngredient.name} is no longer at or below its reorder level. A new draft is not currently justified.`);
   }
   const payloadItems = input.candidate.items.map((candidate) => {
-    const ingredient = ingredients.find((item) => item.name.toLocaleLowerCase() === candidate.ingredientName.toLocaleLowerCase())!;
+    const ingredient = resolveUniqueOperationalName(resolvedIngredients, candidate.ingredientName)!;
     const historical = history.find((item) => item.ingredientId === ingredient.id);
     const unitCost = (historical?.unitCost ?? ingredient.costPerUnit).toNumber();
     return { ingredientId: ingredient.id, quantity: candidate.quantity, unitCost, stockAtProposal: ingredient.currentStock.toNumber(), reorderLevelAtProposal: ingredient.reorderLevel.toNumber(), openIncomingAtProposal: openItems.find((item) => item.ingredientId === ingredient.id)?._sum.quantity?.toNumber() ?? 0 };
   });
-  const displayItems = payloadItems.map((item) => { const ingredient = ingredients.find((value) => value.id === item.ingredientId)!; return { ingredientName: ingredient.name, unit: ingredient.unit, quantity: item.quantity, unitCost: item.unitCost, lineTotal: Number((item.quantity * item.unitCost).toFixed(2)) }; });
+  const displayItems = payloadItems.map((item) => { const ingredient = resolvedIngredients.find((value) => value.id === item.ingredientId)!; return { ingredientName: ingredient.name, unit: ingredient.unit, quantity: item.quantity, unitCost: item.unitCost, lineTotal: Number((item.quantity * item.unitCost).toFixed(2)) }; });
   return { payload: { supplierId: supplier.id, items: payloadItems, ...(input.candidate.expectedAt ? { expectedAt: input.candidate.expectedAt } : {}) }, display: { supplierName: supplier.name, items: displayItems, totalAmount: Number(displayItems.reduce((sum, item) => sum + item.lineTotal, 0).toFixed(2)) }, explanation: input.candidate.explanation };
 }
 
 export async function persistPurchaseOrderProposal(input: { restaurantId: string; clerkUserId: string; prepared: Awaited<ReturnType<typeof preparePurchaseOrderProposal>>; now?: Date }) {
   const now = input.now ?? new Date();
-  const row = await prisma.aIActionProposal.create({ data: { restaurantId: input.restaurantId, type: AIActionProposalType.CREATE_PURCHASE_ORDER_DRAFT, payloadJson: input.prepared.payload as unknown as Prisma.InputJsonValue, displayJson: input.prepared.display as unknown as Prisma.InputJsonValue, explanation: input.prepared.explanation, createdByClerkUserId: input.clerkUserId, expiresAt: new Date(now.getTime() + TTL_MS) } });
+  const registration = getAIActionRegistration("CREATE_PURCHASE_ORDER_DRAFT")!;
+  const row = await prisma.aIActionProposal.create({ data: { restaurantId: input.restaurantId, type: AIActionProposalType.CREATE_PURCHASE_ORDER_DRAFT, payloadJson: input.prepared.payload as unknown as Prisma.InputJsonValue, displayJson: input.prepared.display as unknown as Prisma.InputJsonValue, explanation: input.prepared.explanation, createdByClerkUserId: input.clerkUserId, expiresAt: new Date(now.getTime() + registration.policy.expiresAfterMs) } });
   return publicProposal(row);
 }
 

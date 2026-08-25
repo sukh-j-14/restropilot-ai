@@ -1,11 +1,12 @@
 import "server-only";
 
-import { Prisma, PurchaseOrderStatus } from "@/generated/prisma/client";
+import { InventoryMovementType, Prisma, PurchaseOrderStatus } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
-import { duplicateIngredientReason, purchaseOrderOwnershipError, purchaseOrderTransitionError, shouldApplyInventory, type PurchaseOrderStatusValue } from "@/lib/purchase-orders/policy";
+import { duplicateIngredientReason, purchaseOrderOwnershipError, purchaseOrderReference, purchaseOrderTransitionError, shouldApplyInventory, type PurchaseOrderStatusValue } from "@/lib/purchase-orders/policy";
 import { calculatePurchaseOrderTotal, type PurchaseOrderLineFields } from "@/lib/purchase-orders/validation";
 import { PurchaseOrderError } from "@/lib/services/purchase-order-errors";
 import { assertIdentifier, assertRestaurantId } from "@/lib/services/validation";
+import { applyInventoryDeltaInTransaction } from "@/lib/services/inventory-movements";
 
 const orderInclude = {
   supplier: { select: { id: true, name: true } },
@@ -14,7 +15,7 @@ const orderInclude = {
 
 type OrderPayload = Prisma.PurchaseOrderGetPayload<{ include: typeof orderInclude }>;
 
-function serialize(order: OrderPayload) {
+export function serializePurchaseOrder(order: OrderPayload) {
   return {
     id: order.id,
     supplier: order.supplier,
@@ -26,6 +27,10 @@ function serialize(order: OrderPayload) {
     updatedAt: order.updatedAt.toISOString(),
     items: order.items.map((item) => ({ id: item.id, ingredientId: item.ingredientId, ingredientName: item.ingredient.name, unit: item.ingredient.unit, quantity: item.quantity.toNumber(), unitCost: item.unitCost.toNumber() })),
   };
+}
+
+export function purchaseOrderSnapshot(order: ReturnType<typeof serializePurchaseOrder>) {
+  return { status: order.status, supplierId: order.supplier.id, totalAmount: order.totalAmount, expectedAt: order.expectedAt, orderedAt: order.orderedAt, updatedAt: order.updatedAt, items: order.items.map((item) => ({ ingredientId: item.ingredientId, quantity: item.quantity, unitCost: item.unitCost })).sort((a, b) => a.ingredientId.localeCompare(b.ingredientId)) };
 }
 
 async function assertResources(transaction: Prisma.TransactionClient, restaurantId: string, supplierId: string, items: PurchaseOrderLineFields[]) {
@@ -53,7 +58,19 @@ async function assertResources(transaction: Prisma.TransactionClient, restaurant
 export async function listPurchaseOrders(input: { restaurantId: string; status?: PurchaseOrderStatusValue }) {
   assertRestaurantId(input.restaurantId);
   const orders = await prisma.purchaseOrder.findMany({ where: { restaurantId: input.restaurantId, ...(input.status ? { status: input.status } : {}) }, include: orderInclude, orderBy: { createdAt: "desc" } });
-  return orders.map(serialize);
+  return orders.map(serializePurchaseOrder);
+}
+
+export async function findPurchaseOrders(input: { restaurantId: string; reference?: string; supplierName?: string; status?: PurchaseOrderStatusValue; limit?: number }) {
+  assertRestaurantId(input.restaurantId);
+  const limit = Math.min(Math.max(input.limit ?? 20, 1), 30);
+  const normalizedReference = input.reference?.trim().toUpperCase();
+  const referenceSuffix = normalizedReference?.startsWith("PO-") ? normalizedReference.slice(3).toLowerCase() : normalizedReference?.toLowerCase();
+  const orders = await prisma.purchaseOrder.findMany({
+    where: { restaurantId: input.restaurantId, ...(referenceSuffix ? { id: { endsWith: referenceSuffix } } : {}), ...(input.status ? { status: input.status } : {}), ...(input.supplierName ? { supplier: { name: { contains: input.supplierName, mode: "insensitive" } } } : {}) },
+    include: orderInclude, orderBy: { createdAt: "desc" }, take: 30,
+  });
+  return orders.filter((order) => !normalizedReference || purchaseOrderReference(order.id) === normalizedReference).slice(0, limit).map(serializePurchaseOrder);
 }
 
 export type DraftInput = { restaurantId: string; supplierId: string; expectedAt: Date | null; items: PurchaseOrderLineFields[] };
@@ -61,7 +78,7 @@ export type DraftInput = { restaurantId: string; supplierId: string; expectedAt:
 export async function createPurchaseOrderInTransaction(transaction: Prisma.TransactionClient, input: DraftInput) {
   await assertResources(transaction, input.restaurantId, input.supplierId, input.items);
   const totalAmount = calculatePurchaseOrderTotal(input.items);
-  return serialize(await transaction.purchaseOrder.create({ data: { restaurantId: input.restaurantId, supplierId: input.supplierId, expectedAt: input.expectedAt, totalAmount, status: PurchaseOrderStatus.DRAFT, items: { create: input.items.map((item) => ({ ingredientId: item.ingredientId, quantity: item.quantity, unitCost: item.unitCost })) } }, include: orderInclude }));
+  return serializePurchaseOrder(await transaction.purchaseOrder.create({ data: { restaurantId: input.restaurantId, supplierId: input.supplierId, expectedAt: input.expectedAt, totalAmount, status: PurchaseOrderStatus.DRAFT, items: { create: input.items.map((item) => ({ ingredientId: item.ingredientId, quantity: item.quantity, unitCost: item.unitCost })) } }, include: orderInclude }));
 }
 
 export async function createPurchaseOrder(input: DraftInput) {
@@ -77,13 +94,11 @@ export async function updateDraftPurchaseOrder(input: DraftInput & { purchaseOrd
     if (order.status !== PurchaseOrderStatus.DRAFT) throw new PurchaseOrderError("Only draft purchase orders can be edited.");
     await assertResources(transaction, input.restaurantId, input.supplierId, input.items);
     await transaction.purchaseOrderItem.deleteMany({ where: { purchaseOrderId: order.id, purchaseOrder: { restaurantId: input.restaurantId } } });
-    return serialize(await transaction.purchaseOrder.update({ where: { id: order.id, restaurantId: input.restaurantId }, data: { supplierId: input.supplierId, expectedAt: input.expectedAt, totalAmount: calculatePurchaseOrderTotal(input.items), items: { create: input.items.map((item) => ({ ingredientId: item.ingredientId, quantity: item.quantity, unitCost: item.unitCost })) } }, include: orderInclude }));
+    return serializePurchaseOrder(await transaction.purchaseOrder.update({ where: { id: order.id, restaurantId: input.restaurantId }, data: { supplierId: input.supplierId, expectedAt: input.expectedAt, totalAmount: calculatePurchaseOrderTotal(input.items), items: { create: input.items.map((item) => ({ ingredientId: item.ingredientId, quantity: item.quantity, unitCost: item.unitCost })) } }, include: orderInclude }));
   });
 }
 
-export async function transitionPurchaseOrder(input: { restaurantId: string; purchaseOrderId: string; to: PurchaseOrderStatusValue }) {
-  assertRestaurantId(input.restaurantId); assertIdentifier(input.purchaseOrderId, "purchaseOrderId");
-  return prisma.$transaction(async (transaction) => {
+export async function transitionPurchaseOrderInTransaction(transaction: Prisma.TransactionClient, input: { restaurantId: string; purchaseOrderId: string; to: PurchaseOrderStatusValue }) {
     const order = await transaction.purchaseOrder.findFirst({ where: { id: input.purchaseOrderId, restaurantId: input.restaurantId }, include: { items: { select: { ingredientId: true, quantity: true } } } });
     if (!order) throw new PurchaseOrderError("Purchase order not found.");
     const reason = purchaseOrderTransitionError(order.status, input.to);
@@ -97,12 +112,19 @@ export async function transitionPurchaseOrder(input: { restaurantId: string; pur
 
     if (shouldApplyInventory(order.status, input.to)) {
       for (const item of order.items) {
-        const updated = await transaction.ingredient.updateMany({ where: { id: item.ingredientId, restaurantId: input.restaurantId }, data: { currentStock: { increment: item.quantity } } });
-        if (!updated.count) throw new PurchaseOrderError("A purchase-order ingredient is no longer available.");
+        try {
+          await applyInventoryDeltaInTransaction(transaction, { restaurantId: input.restaurantId, ingredientId: item.ingredientId, delta: item.quantity, type: InventoryMovementType.PURCHASE_ORDER_RECEIPT, sourceId: order.id, reason: "Purchase order received" });
+        } catch (error) {
+          throw new PurchaseOrderError(error instanceof Error ? error.message : "A purchase-order ingredient is no longer available.");
+        }
       }
     }
     return { purchaseOrderId: order.id, status: input.to, inventoryApplied: shouldApplyInventory(order.status, input.to) };
-  });
+}
+
+export async function transitionPurchaseOrder(input: { restaurantId: string; purchaseOrderId: string; to: PurchaseOrderStatusValue }) {
+  assertRestaurantId(input.restaurantId); assertIdentifier(input.purchaseOrderId, "purchaseOrderId");
+  return prisma.$transaction((transaction) => transitionPurchaseOrderInTransaction(transaction, input));
 }
 
 export async function deleteDraftPurchaseOrder(input: { restaurantId: string; purchaseOrderId: string }) {

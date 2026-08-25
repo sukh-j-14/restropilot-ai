@@ -1,5 +1,16 @@
 import { ORDER_IMPORT_FIELDS, RESERVATION_IMPORT_FIELDS, type ColumnMapping, type ImportMappingSuggester, type ImportTargetField, type ImportTypeValue, type MappingSuggestionResult } from "@/lib/imports/types";
 
+export const AI_MAPPING_CONFIDENCE_THRESHOLD = 0.9;
+export type AIImportMappingRequest = { csv: string; importType: ImportTypeValue; retry: boolean };
+
+export function parseAIImportMappingRequest(input: unknown): AIImportMappingRequest | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const candidate = input as Record<string, unknown>;
+  if (Object.keys(candidate).some((key) => !["csv", "importType", "retry"].includes(key)) || typeof candidate.csv !== "string" || typeof candidate.importType !== "string" || (candidate.retry !== undefined && typeof candidate.retry !== "boolean")) return null;
+  if (candidate.importType !== "HISTORICAL_ORDERS" && candidate.importType !== "HISTORICAL_RESERVATIONS") return null;
+  return { csv: candidate.csv, importType: candidate.importType, retry: candidate.retry === true };
+}
+
 const aliases: Record<ImportTargetField, string[]> = {
   orderNumber: ["order number", "order no", "order id", "bill no", "bill number", "invoice", "invoice no", "ticket", "ticket no"],
   createdAt: ["created at", "created", "order date", "transaction date", "txn date", "date time", "datetime", "date"],
@@ -48,4 +59,30 @@ export function applyManualMapping(mappings: ColumnMapping[], sourceColumn: stri
     if (targetField && mapping.targetField === targetField) return { ...mapping, targetField: null, confidence: 0, source: "manual" as const };
     return mapping;
   });
+}
+
+export function mergeImportMappingSuggestions(current: ColumnMapping[], ai: MappingSuggestionResult): MappingSuggestionResult {
+  const warnings = [...ai.warnings];
+  const aiBySource = new Map(ai.mappings.map((mapping) => [mapping.sourceColumn, mapping]));
+  const protectedTargets = new Set(current.filter((mapping) => mapping.source === "manual" || (mapping.targetField && mapping.confidence >= AI_MAPPING_CONFIDENCE_THRESHOLD)).map((mapping) => mapping.targetField).filter(Boolean));
+  const result = current.map((mapping) => {
+    if (mapping.source === "manual" || (mapping.targetField && mapping.confidence >= AI_MAPPING_CONFIDENCE_THRESHOLD)) return mapping;
+    const suggestion = aiBySource.get(mapping.sourceColumn);
+    if (!suggestion) return mapping;
+    if (suggestion.targetField && protectedTargets.has(suggestion.targetField)) {
+      warnings.push(`${suggestion.sourceColumn} conflicts with a protected automatic or manual mapping and needs review.`);
+      return mapping;
+    }
+    return suggestion;
+  });
+  const winners = new Map<ImportTargetField, ColumnMapping>();
+  for (const mapping of result) {
+    if (!mapping.targetField) continue;
+    const existing = winners.get(mapping.targetField);
+    if (!existing || (existing.source !== "manual" && mapping.confidence > existing.confidence)) winners.set(mapping.targetField, mapping);
+  }
+  return {
+    mappings: result.map((mapping) => mapping.targetField && winners.get(mapping.targetField)?.sourceColumn !== mapping.sourceColumn ? { ...mapping, targetField: null, confidence: 0 } : mapping),
+    warnings: [...new Set(warnings)].slice(0, 12),
+  };
 }

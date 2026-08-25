@@ -1,6 +1,7 @@
 import "server-only";
 
 import { AIManagerError } from "@/lib/ai/errors";
+import { assertNoProviderProtocolText } from "@/lib/ai/provider-protocol";
 import type { AIProvider, AIProviderMessage, AIProviderRequest, AIProviderResponse } from "@/lib/ai/types";
 
 type OpenRouterToolCall = { id?: unknown; type?: unknown; function?: { name?: unknown; arguments?: unknown } };
@@ -25,7 +26,8 @@ function translateResponse(payload: unknown): AIProviderResponse {
   const finish = choice?.finish_reason;
   const finishReason = finish === "stop" || finish === "tool_calls" || finish === "length" || finish === "error" ? finish : "unknown";
   const selectedModel = (payload as OpenRouterResponse).model;
-  return { content: typeof message.content === "string" ? message.content : "", toolCalls, finishReason, selectedModel: typeof selectedModel === "string" ? selectedModel : undefined };
+  const content = assertNoProviderProtocolText(typeof message.content === "string" ? message.content : "");
+  return { content, toolCalls, finishReason, selectedModel: typeof selectedModel === "string" ? selectedModel : undefined };
 }
 
 export function createOpenRouterProvider(environment: NodeJS.ProcessEnv = process.env): AIProvider {

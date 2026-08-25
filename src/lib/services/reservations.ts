@@ -1,6 +1,6 @@
 import "server-only";
 
-import { ReservationStatus } from "@/generated/prisma/client";
+import { Prisma, ReservationStatus } from "@/generated/prisma/client";
 import { getZonedDateParts } from "@/lib/dashboard/date";
 import { prisma } from "@/lib/prisma";
 import { aggregateReservations } from "@/lib/services/calculations";
@@ -158,8 +158,8 @@ export async function listReservations(input: DateRangeInput & { status?: Reserv
   return records.map(serializeReservation);
 }
 
-async function assertNoDuplicate(input: ReservationWriteInput & { excludeId?: string }) {
-  const duplicate = await prisma.reservation.findFirst({
+async function assertNoDuplicate(client: typeof prisma | Prisma.TransactionClient, input: ReservationWriteInput & { excludeId?: string }) {
+  const duplicate = await client.reservation.findFirst({
     where: {
       restaurantId: input.restaurantId,
       customerName: { equals: input.customerName, mode: "insensitive" },
@@ -175,43 +175,58 @@ async function assertNoDuplicate(input: ReservationWriteInput & { excludeId?: st
 
 export async function createReservation(input: ReservationWriteInput) {
   assertRestaurantId(input.restaurantId);
-  await assertNoDuplicate(input);
-  return serializeReservation(await prisma.reservation.create({
+  return createReservationInTransaction(prisma, input);
+}
+
+export async function createReservationInTransaction(client: typeof prisma | Prisma.TransactionClient, input: ReservationWriteInput) {
+  assertRestaurantId(input.restaurantId);
+  await assertNoDuplicate(client, input);
+  return serializeReservation(await client.reservation.create({
     data: { ...input, status: ReservationStatus.PENDING },
     select: reservationSelect,
   }));
 }
 
 export async function updateReservation(input: ReservationWriteInput & { reservationId: string }) {
+  return updateReservationInTransaction(prisma, input);
+}
+
+export async function updateReservationInTransaction(client: typeof prisma | Prisma.TransactionClient, input: ReservationWriteInput & { reservationId: string; expectedUpdatedAt?: Date }) {
   assertRestaurantId(input.restaurantId);
   assertIdentifier(input.reservationId, "reservationId");
-  const existing = await prisma.reservation.findFirst({
+  const existing = await client.reservation.findFirst({
     where: { id: input.reservationId, restaurantId: input.restaurantId },
-    select: { id: true, status: true },
+    select: { id: true, status: true, updatedAt: true },
   });
   if (!existing) throw new ReservationError("Reservation not found.");
   if (!canEditReservation(existing.status)) throw new ReservationError("Only pending or confirmed reservations can be edited.");
-  await assertNoDuplicate({ ...input, excludeId: existing.id });
-  const updated = await prisma.reservation.updateMany({
-    where: { id: existing.id, restaurantId: input.restaurantId, status: existing.status },
+  if (input.expectedUpdatedAt && existing.updatedAt.getTime() !== input.expectedUpdatedAt.getTime()) throw new ReservationError("Reservation changed. Refresh and try again.");
+  await assertNoDuplicate(client, { ...input, excludeId: existing.id });
+  const updated = await client.reservation.updateMany({
+    where: { id: existing.id, restaurantId: input.restaurantId, status: existing.status, ...(input.expectedUpdatedAt ? { updatedAt: input.expectedUpdatedAt } : {}) },
     data: { customerName: input.customerName, guestCount: input.guestCount, reservationTime: input.reservationTime, tableNumber: input.tableNumber },
   });
   if (!updated.count) throw new ReservationError("Reservation changed. Refresh and try again.");
-  return serializeReservation((await prisma.reservation.findFirst({ where: { id: existing.id, restaurantId: input.restaurantId }, select: reservationSelect }))!);
+  return serializeReservation((await client.reservation.findFirst({ where: { id: existing.id, restaurantId: input.restaurantId }, select: reservationSelect }))!);
 }
 
 export async function transitionReservation(input: { restaurantId: string; reservationId: string; to: ReservationStatusValue }) {
+  return transitionReservationInTransaction(prisma, input);
+}
+
+export async function transitionReservationInTransaction(client: typeof prisma | Prisma.TransactionClient, input: { restaurantId: string; reservationId: string; to: ReservationStatusValue; expectedUpdatedAt?: Date; expectedStatus?: ReservationStatusValue }) {
   assertRestaurantId(input.restaurantId);
   assertIdentifier(input.reservationId, "reservationId");
-  const existing = await prisma.reservation.findFirst({
+  const existing = await client.reservation.findFirst({
     where: { id: input.reservationId, restaurantId: input.restaurantId },
-    select: { id: true, status: true },
+    select: { id: true, status: true, updatedAt: true },
   });
   if (!existing) throw new ReservationError("Reservation not found.");
+  if ((input.expectedStatus && existing.status !== input.expectedStatus) || (input.expectedUpdatedAt && existing.updatedAt.getTime() !== input.expectedUpdatedAt.getTime())) throw new ReservationError("Reservation status changed. Refresh and try again.");
   const reason = reservationTransitionError(existing.status, input.to);
   if (reason) throw new ReservationError(reason);
-  const updated = await prisma.reservation.updateMany({
-    where: { id: existing.id, restaurantId: input.restaurantId, status: existing.status },
+  const updated = await client.reservation.updateMany({
+    where: { id: existing.id, restaurantId: input.restaurantId, status: existing.status, ...(input.expectedUpdatedAt ? { updatedAt: input.expectedUpdatedAt } : {}) },
     data: { status: input.to },
   });
   if (!updated.count) throw new ReservationError("Reservation status changed. Refresh and try again.");

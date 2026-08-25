@@ -1,6 +1,7 @@
 import "server-only";
 
 import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@/generated/prisma/client";
 import { assertIdentifier } from "@/lib/services/validation";
 import type { ValidatedOnboardingInput } from "@/lib/onboarding/validation";
 
@@ -32,8 +33,15 @@ export async function updateRestaurantSettings(input: {
   restaurantId: string;
   data: ValidatedOnboardingInput;
 }): Promise<RestaurantRecord> {
+  return updateRestaurantSettingsInTransaction(prisma, input);
+}
+
+export async function updateRestaurantSettingsInTransaction(
+  transaction: Prisma.TransactionClient,
+  input: { restaurantId: string; data: ValidatedOnboardingInput },
+): Promise<RestaurantRecord> {
   assertIdentifier(input.restaurantId, "restaurantId");
-  const restaurant = await prisma.restaurant.update({
+  const restaurant = await transaction.restaurant.update({
     where: { id: input.restaurantId },
     data: {
       name: input.data.name,

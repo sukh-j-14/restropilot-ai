@@ -43,5 +43,6 @@ test("menu deletion policy protects historical orders", () => {
 test("ingredient deletion policy protects recipes and purchase history", () => {
   assert.match(ingredientDeletionBlockReason(1, 0) ?? "", /recipes/i);
   assert.match(ingredientDeletionBlockReason(0, 1) ?? "", /purchase-order history/i);
+  assert.match(ingredientDeletionBlockReason(0, 0, 1) ?? "", /movement history/i);
   assert.equal(ingredientDeletionBlockReason(0, 0), null);
 });

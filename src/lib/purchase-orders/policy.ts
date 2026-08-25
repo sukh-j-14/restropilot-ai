@@ -28,3 +28,5 @@ export function purchaseOrderOwnershipError(expectedRestaurantId: string, actual
 export function shouldApplyInventory(previousStatus: PurchaseOrderStatusValue, nextStatus: PurchaseOrderStatusValue) {
   return nextStatus === "RECEIVED" && (previousStatus === "ORDERED" || previousStatus === "PARTIALLY_RECEIVED");
 }
+
+export function purchaseOrderReference(id: string) { return `PO-${id.slice(-8).toUpperCase()}`; }

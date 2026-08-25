@@ -4,8 +4,11 @@ import type { AIConversationMessage } from "@/lib/ai/types";
 export const MAX_USER_MESSAGE_LENGTH = 1_500;
 export const MAX_ASSISTANT_MESSAGE_LENGTH = 8_000;
 export const MAX_HISTORY_MESSAGES = 10;
-export const MAX_TOOL_ROUNDS = 3;
-export const MAX_TOOL_CALLS = 8;
+// Cross-domain briefings and evidence-backed proposals commonly need four
+// sequential decisions (resolve resource, inspect state, check conflicts,
+// propose). Keep the loop bounded while allowing those workflows to finish.
+export const MAX_TOOL_ROUNDS = 5;
+export const MAX_TOOL_CALLS = 12;
 export const PROVIDER_TIMEOUT_MS = 45_000;
 export const OVERALL_AI_TIMEOUT_MS = 120_000;
 
