@@ -4,7 +4,7 @@ import { AIActionProposalStatus, AIActionProposalType, Prisma } from "@/generate
 import type { AIActionProposal, OrderProposalCandidate, OrderProposalDisplay, OrderProposalPayload } from "@/lib/ai/action-proposal-types";
 import { getAIActionRegistration } from "@/lib/ai/action-registry";
 import { calculateOrderTotals } from "@/lib/orders/calculations";
-import { canTransitionOrder, validateOrderStatus, validateOrderType, type OrderTypeValue } from "@/lib/orders/policy";
+import { canTransitionOrder, orderSnapshotMatches, validateOrderStatus, validateOrderType, type OrderTypeValue } from "@/lib/orders/policy";
 import { prisma } from "@/lib/prisma";
 import { createOrderInTransaction, transitionOrderInTransaction, updateOrderItemsInTransaction } from "@/lib/services/orders";
 import { OrderWorkflowError } from "@/lib/services/order-errors";
@@ -15,7 +15,7 @@ const selectOrder = { id: true, orderNumber: true, status: true, orderType: true
 type ExistingOrder = Prisma.OrderGetPayload<{ select: typeof selectOrder }>;
 const money = (value: Prisma.Decimal | number) => Number(value);
 const snapshot = (order: ExistingOrder): OrderProposalPayload["snapshot"] => ({ status: order.status, orderType: order.orderType, inventoryConsumedAt: order.inventoryConsumedAt?.toISOString() ?? null, subtotal: money(order.subtotal), discount: money(order.discount), tax: money(order.tax), total: money(order.total), items: order.items.map((item) => ({ menuItemId: item.menuItemId, quantity: item.quantity, unitPrice: money(item.unitPrice) })).sort((a, b) => a.menuItemId.localeCompare(b.menuItemId)) });
-function snapshotsEqual(order: ExistingOrder, expected: OrderProposalPayload["snapshot"]) { return JSON.stringify(snapshot(order)) === JSON.stringify({ ...expected, items: expected.items?.slice().sort((a, b) => a.menuItemId.localeCompare(b.menuItemId)) }); }
+function snapshotsEqual(order: ExistingOrder, expected: OrderProposalPayload["snapshot"]) { return orderSnapshotMatches(snapshot(order), expected); }
 
 export async function prepareOrderProposal(input: { restaurantId: string; candidate: OrderProposalCandidate }) {
   assertRestaurantId(input.restaurantId); const candidate = input.candidate;

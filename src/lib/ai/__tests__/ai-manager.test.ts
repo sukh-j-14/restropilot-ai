@@ -3,7 +3,7 @@ import test from "node:test";
 import { AIManagerError, safeAIErrorMessage } from "../errors";
 import { buildBrowserConversationHistory } from "../history";
 import { MAX_HISTORY_MESSAGES, MAX_TOOL_ROUNDS, MAX_USER_MESSAGE_LENGTH, validateConversationInput } from "../limits";
-import { isCollectionInterimText, missingRequiredEvidence, runAIToolLoop, validateFinalAnswer } from "../orchestrator";
+import { isCollectionInterimText, missingRequiredEvidence, normalizeOwnerFacingAnswer, requiredProposalTool, runAIToolLoop, validateFinalAnswer } from "../orchestrator";
 import { resolveProviderConfiguration } from "../provider-config";
 import { createFallbackProvider } from "../providers/fallback";
 import { serializeToolResult } from "../serialization";
@@ -18,6 +18,20 @@ import { toGeminiSchema } from "../providers/gemini";
 
 const restaurant: AIRestaurantContext = { id: "internal-tenant-id", name: "Test Kitchen", timezone: "Asia/Kolkata", currency: "INR", guestCapacity: 80 };
 const tool = (id: string, name: string, args: unknown): AIProviderResponse => ({ content: "", toolCalls: [{ id, name, arguments: typeof args === "string" ? args : JSON.stringify(args) }], finishReason: "tool_calls" });
+
+test("empty collection serialization is normalized for owner-facing answers", () => {
+  assert.equal(normalizeOwnerFacingAnswer("There are currently none ([] low-stock items returned)."), "There are currently none (no low-stock items returned).");
+});
+
+test("explicit menu availability changes require the registered proposal tool", () => {
+  assert.equal(requiredProposalTool("Make AI Test Pasta available again."), "propose_menu_recipe_action");
+  assert.equal(requiredProposalTool("Put Butter Chicken back on the menu"), "propose_menu_recipe_action");
+  assert.equal(requiredProposalTool("Remove Panneer from AI Test Pasta's recipe."), "propose_menu_recipe_action");
+  assert.equal(requiredProposalTool("Add 500 g Panneer to AI Test Pasta's recipe."), "propose_menu_recipe_action");
+  assert.equal(requiredProposalTool("Change Panneer usage in AI Test Pasta to 750g."), "propose_menu_recipe_action");
+  assert.equal(requiredProposalTool("Is AI Test Pasta available?"), null);
+  assert.equal(requiredProposalTool("Show me AI Test Pasta's recipe."), null);
+});
 
 class SequenceProvider implements AIProvider {
   readonly name = "fake";
@@ -85,6 +99,7 @@ test("operational questions require minimum evidence before synthesis", () => {
 
 test("proposal resource spelling fallback is deterministic and ambiguity-safe", () => {
   assert.equal(resolveUniqueOperationalName([{ name: "Panneer" }], "Paneer")?.name, "Panneer");
+  assert.equal(resolveUniqueOperationalName([{ name: "Panneer" }], "Panner")?.name, "Panneer");
   assert.equal(resolveUniqueOperationalName([{ name: "Paneer" }, { name: "Panneer" }], "Paneeer"), undefined);
   assert.equal(resolveUniqueOperationalName([{ name: "Onion" }], "Tomato"), undefined);
 });

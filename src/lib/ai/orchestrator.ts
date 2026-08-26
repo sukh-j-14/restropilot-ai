@@ -28,15 +28,29 @@ function containsProviderEnvelope(value: unknown): boolean {
 export function validateFinalAnswer(value: unknown, selectedModel?: string) {
   if (selectedModel && /(?:content[-_/ ]?safety|safeguard|rerank|embedding)/i.test(selectedModel)) throw new AIManagerError("INVALID_RESPONSE", "A non-conversational model was selected for synthesis.");
   if (typeof value !== "string" || !value.trim()) throw new AIManagerError("FINAL_RESPONSE_MISSING", "Provider did not produce a final answer.");
-  const answer = assertNoProviderProtocolText(value.trim());
+  const answer = normalizeOwnerFacingAnswer(assertNoProviderProtocolText(value.trim()));
   if (answer.length > MAX_ASSISTANT_MESSAGE_LENGTH) throw new AIManagerError("INVALID_RESPONSE", "Final response exceeds the safe length limit.");
   try { if (containsProviderEnvelope(JSON.parse(answer))) throw new AIManagerError("INVALID_RESPONSE", "Final response contained a provider transcript."); } catch (error) { if (error instanceof AIManagerError) throw error; }
   return answer;
 }
 
+/** Remove small serialization artifacts without interpreting or executing model output. */
+export function normalizeOwnerFacingAnswer(value: string) {
+  return value
+    .replace(/\(\s*\[\]\s+([^)]+)\)/g, "(no $1)")
+    .replace(/\b\[\]\s+(?=(?:low-stock|inventory|reservation|order|purchase-order)\b)/gi, "no ");
+}
+
 const INVENTORY_EVIDENCE = new Set(["get_low_stock_items", "get_inventory_status", "get_ingredient_details", "find_ingredients"]);
 const PURCHASE_ORDER_EVIDENCE = new Set(["list_purchase_orders", "find_purchase_orders", "get_purchase_order_details"]);
 const RESERVATION_EVIDENCE = new Set(["get_reservation_summary", "get_expected_guests", "list_upcoming_reservations", "find_reservations"]);
+
+export function requiredProposalTool(message: string) {
+  if (/\b(?:make|set|mark|put)\b[\s\S]{0,120}\b(?:unavailable|available|back on (?:the )?menu)\b/i.test(message)) return "propose_menu_recipe_action";
+  if (/\b(?:add|remove|change|update)\b[\s\S]{0,160}\b(?:recipe|recipe ingredient|usage)\b/i.test(message)
+    || /\b(?:recipe|recipe ingredient|usage)\b[\s\S]{0,160}\b(?:add|remove|change|update)\b/i.test(message)) return "propose_menu_recipe_action";
+  return null;
+}
 
 export function missingRequiredEvidence(message: string, toolsUsed: string[]): string[] {
   const used = new Set(toolsUsed);
@@ -64,7 +78,7 @@ export async function runAIToolLoop(input: { provider: AIProvider; restaurant: A
   let provider = input.provider.createSession?.() ?? input.provider;
   const messages: AIProviderMessage[] = [{ role: "system", content: buildAIManagerSystemPrompt(input.restaurant, input.now) }, ...input.history, { role: "user", content: input.message }];
   const toolsUsed: string[] = []; const activities: string[] = []; const cache = new Map<string, ToolResult>();
-  const started = Date.now(); let totalCalls = 0; let providerRounds = 0; let collectionRounds = 0; let selectedModel: string | undefined; let proposalCandidate: AIProposalCandidate | undefined; let finalResponse: AIProviderResponse | undefined; let evidenceNudged = false;
+  const started = Date.now(); let totalCalls = 0; let providerRounds = 0; let collectionRounds = 0; let selectedModel: string | undefined; let proposalCandidate: AIProposalCandidate | undefined; let finalResponse: AIProviderResponse | undefined; let evidenceNudged = false; let proposalNudged = false;
 
   async function generate(tools: AIToolDefinition[], phase: "tools" | "synthesis"): Promise<AIProviderResponse> {
     const elapsed = Date.now() - started; const remaining = OVERALL_AI_TIMEOUT_MS - elapsed;
@@ -102,6 +116,13 @@ export async function runAIToolLoop(input: { provider: AIProvider; restaurant: A
         break;
       }
       if (!response.toolCalls.length) {
+        const requiredProposal = requiredProposalTool(input.message);
+        if (requiredProposal && !proposalCandidate && !proposalNudged && toolRound < MAX_TOOL_ROUNDS) {
+          proposalNudged = true;
+          messages.push({ role: "system", content: `The user explicitly requested a supported controlled change. No proposal exists yet. Request the registered ${requiredProposal} tool now after using the verified read result. Do not claim a proposal was submitted unless that tool succeeds.` });
+          logAIOrchestration({ stage: "collection_continued", collectionRound: toolRound, reason: "PROPOSAL_REQUIRED", toolName: requiredProposal, totalToolCalls: totalCalls, restaurantId: input.restaurant.id });
+          continue;
+        }
         const missing = missingRequiredEvidence(input.message, toolsUsed);
         if (missing.length && !evidenceNudged && toolRound < MAX_TOOL_ROUNDS) {
           evidenceNudged = true;
@@ -110,7 +131,7 @@ export async function runAIToolLoop(input: { provider: AIProvider; restaurant: A
           continue;
         }
         logAIOrchestration({ stage: "collection_stopped", collectionRound: toolRound, reason: "NO_TOOL_CALLS", collectionTextAccepted: Boolean(response.content.trim() && !isCollectionInterimText(response.content)), totalToolCalls: totalCalls, restaurantId: input.restaurant.id });
-        if (response.content.trim() && !isCollectionInterimText(response.content)) finalResponse = response;
+        if (response.content.trim() && !isCollectionInterimText(response.content) && !(requiredProposalTool(input.message) && !proposalCandidate)) finalResponse = response;
         break;
       }
       if (response.toolCalls.length > MAX_TOOL_CALLS - totalCalls) throw new AIManagerError("TOOL_CALL_LIMIT", "Maximum tool calls reached.");
@@ -140,7 +161,7 @@ export async function runAIToolLoop(input: { provider: AIProvider; restaurant: A
       return { answer, toolsUsed: [...new Set(toolsUsed)], activities: [...new Set(activities)], ...(proposalCandidate ? { proposalCandidate } : {}) };
     }
 
-    messages.push({ role: "system", content: `Tool collection is complete. Return only the restaurant-owner-facing answer. Do not describe reasoning, planning, possible tool calls, or internal orchestration. Do not request or claim additional tool calls. Use only verified restaurant facts supplied by successful tool results. ${toolsUsed.length ? "Clearly distinguish facts, inferences, and recommendations." : "No restaurant data tool succeeded, so do not make restaurant-specific factual claims; clearly say that verified restaurant data was unavailable for this answer."}` });
+    messages.push({ role: "system", content: `Tool collection is complete. Return only the restaurant-owner-facing answer. Do not describe reasoning, planning, possible tool calls, or internal orchestration. Do not request or claim additional tool calls. Use only verified restaurant facts supplied by successful tool results. ${proposalCandidate ? "A server-validated proposal was created and may be described as awaiting approval." : "No server-validated proposal was created. Do not claim that a proposal was submitted, prepared, registered, or is awaiting approval."} ${toolsUsed.length ? "Clearly distinguish facts, inferences, and recommendations." : "No restaurant data tool succeeded, so do not make restaurant-specific factual claims; clearly say that verified restaurant data was unavailable for this answer."}` });
     logAIOrchestration({ stage: "synthesis_started", collectionRounds, totalToolCalls: totalCalls, successfulTools: toolsUsed.length, restaurantId: input.restaurant.id, provider: provider.name });
     // Do not send function declarations during synthesis. Some compatible
     // providers ignore tool_choice=none when declarations remain present.

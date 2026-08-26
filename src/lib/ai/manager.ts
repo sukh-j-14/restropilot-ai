@@ -8,7 +8,7 @@ import { persistPurchaseOrderProposal, preparePurchaseOrderProposal } from "@/li
 import { PURCHASE_ORDER_PROPOSAL_TOOL, purchaseOrderProposalToolDefinition, validatePurchaseOrderProposalTool } from "@/lib/ai/proposal-tool";
 import { MENU_RECIPE_PROPOSAL_TOOL, menuRecipeProposalToolDefinition, validateMenuRecipeProposalTool } from "@/lib/ai/menu-recipe-proposal-tool";
 import { persistMenuRecipeProposal, prepareMenuRecipeProposal } from "@/lib/services/ai-menu-recipe-actions";
-import { INVENTORY_PROPOSAL_TOOL, inventoryProposalToolDefinition, validateInventoryProposalTool } from "@/lib/ai/inventory-proposal-tool";
+import { INVENTORY_PROPOSAL_TOOL, inventoryProposalToolDefinition, validateInventoryProposalIntent, validateInventoryProposalTool } from "@/lib/ai/inventory-proposal-tool";
 import { persistInventoryProposal, prepareInventoryProposal } from "@/lib/services/ai-inventory-actions";
 import { SUPPLIER_PROPOSAL_TOOL, supplierProposalToolDefinition, validateSupplierProposalTool } from "@/lib/ai/supplier-proposal-tool";
 import { persistSupplierProposal, prepareSupplierProposal } from "@/lib/services/ai-supplier-actions";
@@ -22,6 +22,7 @@ import { PURCHASE_ORDER_STATUS_PROPOSAL_TOOL, purchaseOrderStatusProposalToolDef
 import { persistPurchaseOrderStatusProposal, preparePurchaseOrderStatusProposal } from "@/lib/services/ai-purchase-order-status-actions";
 import type { AIRestaurantContext } from "@/lib/ai/types";
 import type { AIProposalCandidate, OrderProposalCandidate, PurchaseOrderProposalCandidate, PurchaseOrderStatusProposalCandidate, ReservationProposalCandidate, RestaurantSettingsProposalCandidate, SupplierProposalCandidate } from "@/lib/ai/action-proposal-types";
+import { containsBrowserSuppliedTenantIdentity } from "@/lib/ai/tenant-input-policy";
 
 function isSupplierCandidate(candidate: AIProposalCandidate): candidate is SupplierProposalCandidate { return "actionType" in candidate && (candidate.actionType === "CREATE_SUPPLIER" || candidate.actionType === "UPDATE_SUPPLIER"); }
 function isPurchaseOrderCandidate(candidate: AIProposalCandidate): candidate is PurchaseOrderProposalCandidate { return !("actionType" in candidate) && "supplierName" in candidate; }
@@ -36,6 +37,10 @@ export function getAIManagerToolDefinitions() {
 
 export async function askAIManager(input: { request: unknown; restaurant: AIRestaurantContext; clerkUserId: string }) {
   const validated = validateConversationInput(input.request);
+  if (containsBrowserSuppliedTenantIdentity(validated.message)) return {
+    answer: "I can’t use a restaurant, organization, tenant, or Clerk identifier supplied in chat. This workspace is resolved securely from your active Clerk organization. Please repeat the request using the ingredient or business record name only.",
+    toolsUsed: [], activities: [], actionProposal: null,
+  };
   checkInMemoryThrottle(input.restaurant.id);
   const result = await runAIToolLoop({
     provider: getAIProvider(), restaurant: input.restaurant, history: validated.history, message: validated.message,
@@ -47,7 +52,7 @@ export async function askAIManager(input: { request: unknown; restaurant: AIRest
         return { content: JSON.stringify({ accepted: true, humanApprovalRequired: true }), activity: "Preparing a purchase recommendation...", proposalCandidate: candidate };
       }
       if (name === MENU_RECIPE_PROPOSAL_TOOL) { const candidate = validateMenuRecipeProposalTool(args); await prepareMenuRecipeProposal({ restaurantId: restaurant.id, candidate }); return { content: JSON.stringify({ accepted: true, humanApprovalRequired: true }), activity: "Preparing a menu change...", proposalCandidate: candidate }; }
-      if (name === INVENTORY_PROPOSAL_TOOL) { const candidate = validateInventoryProposalTool(args); await prepareInventoryProposal({ restaurantId: restaurant.id, candidate }); return { content: JSON.stringify({ accepted: true, humanApprovalRequired: true }), activity: "Preparing an inventory change...", proposalCandidate: candidate }; }
+      if (name === INVENTORY_PROPOSAL_TOOL) { const candidate = validateInventoryProposalIntent(validateInventoryProposalTool(args), validated.message); await prepareInventoryProposal({ restaurantId: restaurant.id, candidate }); return { content: JSON.stringify({ accepted: true, humanApprovalRequired: true }), activity: "Preparing an inventory change...", proposalCandidate: candidate }; }
       if (name === SUPPLIER_PROPOSAL_TOOL) { const candidate = validateSupplierProposalTool(args); await prepareSupplierProposal({ restaurantId: restaurant.id, candidate }); return { content: JSON.stringify({ accepted: true, humanApprovalRequired: true }), activity: "Preparing a supplier change...", proposalCandidate: candidate }; }
       if (name === RESERVATION_PROPOSAL_TOOL) { const candidate = validateReservationProposalTool(args); await prepareReservationProposal({ restaurantId: restaurant.id, candidate }); return { content: JSON.stringify({ accepted: true, humanApprovalRequired: true }), activity: "Preparing a reservation change...", proposalCandidate: candidate }; }
       if (name === ORDER_PROPOSAL_TOOL) { const candidate = validateOrderProposalTool(args); await prepareOrderProposal({ restaurantId: restaurant.id, candidate }); return { content: JSON.stringify({ accepted: true, humanApprovalRequired: true }), activity: "Preparing an order change...", proposalCandidate: candidate }; }

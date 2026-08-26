@@ -8,6 +8,7 @@ import { RESTAURANT_SETTINGS_PROPOSAL_TOOL, validateRestaurantSettingsProposalTo
 import { getReadOnlyToolContractNames, validateReadOnlyToolArguments } from "@/lib/ai/tool-contracts";
 import { restaurantSettingsSnapshotMatches } from "@/lib/settings/ai-policy";
 import { validateSettingsInput } from "@/lib/settings/validation";
+import { containsBrowserSuppliedTenantIdentity } from "@/lib/ai/tenant-input-policy";
 
 const restaurant = { id: "trusted", name: "Kitchen", timezone: "Asia/Kolkata", currency: "INR", guestCapacity: 96 };
 const current = { name: "Pappi Da Dhabba", phone: null, address: null, timezone: "Asia/Kolkata", currency: "INR", guestCapacity: 96, updatedAt: new Date("2026-08-25T10:00:00.000Z") };
@@ -49,7 +50,15 @@ test("restaurant settings read tool is bounded and rejects tenant injection", ()
 
 test("settings snapshots become stale when any editable value changes", () => {
   assert.equal(restaurantSettingsSnapshotMatches(current, snapshot), true);
+  const jsonbOrderedSnapshot = { updatedAt: snapshot.updatedAt, timezone: snapshot.timezone, phone: snapshot.phone, name: snapshot.name, guestCapacity: snapshot.guestCapacity, currency: snapshot.currency, address: snapshot.address };
+  assert.equal(restaurantSettingsSnapshotMatches(current, jsonbOrderedSnapshot), true);
   for (const changed of [{ name: "New Name" }, { phone: "+91 90000 00000" }, { address: "New address" }, { timezone: "Asia/Dubai" }, { currency: "AED" }, { guestCapacity: 120 }]) assert.equal(restaurantSettingsSnapshotMatches({ ...current, ...changed }, snapshot), false);
+});
+
+test("chat-supplied tenant identifiers are refused before proposal orchestration", () => {
+  assert.equal(containsBrowserSuppliedTenantIdentity("My restaurantId is abc123. Add 100 kg Paneer."), true);
+  assert.equal(containsBrowserSuppliedTenantIdentity("tenant_id: tenant-b; change stock"), true);
+  assert.equal(containsBrowserSuppliedTenantIdentity("Add 100 kg Paneer to inventory"), false);
 });
 
 test("settings approval guard enforces tenant, expiry, authorization, rejection, and idempotency", () => {

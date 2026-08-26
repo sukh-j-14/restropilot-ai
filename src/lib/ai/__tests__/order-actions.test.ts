@@ -3,7 +3,7 @@ import test from "node:test";
 import { getAIActionRegistration, getRegisteredAIActionTypes } from "@/lib/ai/action-registry";
 import { AI_ACTION_POLICIES } from "@/lib/ai/action-policy";
 import { validateOrderProposalTool } from "@/lib/ai/order-proposal-tool";
-import { canTransitionOrder, shouldConsumeInventory } from "@/lib/orders/policy";
+import { canTransitionOrder, orderSnapshotMatches, shouldConsumeInventory } from "@/lib/orders/policy";
 import { calculateOrderTotals } from "@/lib/orders/calculations";
 
 test("create order proposal accepts canonical names but not trusted prices", () => {
@@ -27,3 +27,4 @@ test("order actions are registered medium-risk admin approvals", () => {
 test("no permanent order delete action is registered", () => { assert.equal(getRegisteredAIActionTypes().includes("DELETE_ORDER" as never), false); });
 test("existing lifecycle remains authoritative and preparation consumes once", () => { assert.equal(canTransitionOrder("PENDING", "CONFIRMED"), true); assert.equal(canTransitionOrder("CONFIRMED", "PREPARING"), true); assert.equal(canTransitionOrder("PENDING", "READY"), false); assert.equal(shouldConsumeInventory("CONFIRMED", "PREPARING", null), true); assert.equal(shouldConsumeInventory("CONFIRMED", "PREPARING", new Date()), false); });
 test("order totals remain deterministic and server-calculated", () => { assert.deepEqual(calculateOrderTotals([{ menuItemId: "a", quantity: 2, unitPrice: "300" }, { menuItemId: "b", quantity: 3, unitPrice: "80" }], "10", "20"), { subtotal: "840.00", discount: "10.00", tax: "20.00", total: "850.00" }); });
+test("order snapshots compare business values instead of JSON property order", () => { const current = { status: "PENDING", orderType: "DINE_IN", inventoryConsumedAt: null, subtotal: 598, discount: 0, tax: 0, total: 598, items: [{ menuItemId: "menu-a", quantity: 2, unitPrice: 299 }] }; const persisted = { total: 598, tax: 0, subtotal: 598, status: "PENDING", orderType: "DINE_IN", items: [{ unitPrice: 299, quantity: 2, menuItemId: "menu-a" }], inventoryConsumedAt: null, discount: 0 }; assert.equal(orderSnapshotMatches(current, persisted), true); assert.equal(orderSnapshotMatches(current, { ...persisted, total: 599 }), false); });

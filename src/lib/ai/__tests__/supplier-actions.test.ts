@@ -37,6 +37,7 @@ test("existing supplier validation enforces email and phone formats", () => {
 test("supplier matching resolves exact names and reports ambiguous partial names", () => {
   const suppliers = [{ id: "one", name: "Fresh Foods Punjab" }, { id: "two", name: "Fresh Foods Wholesale" }, { id: "three", name: "Amrit Dairy" }];
   assert.deepEqual(resolveSupplierMatch(suppliers, "amrit dairy"), { kind: "resolved", supplier: suppliers[2] });
+  assert.deepEqual(resolveSupplierMatch(suppliers, "amrit dair"), { kind: "resolved", supplier: suppliers[2] });
   assert.equal(resolveSupplierMatch(suppliers, "Fresh Foods").kind, "ambiguous");
   assert.equal(resolveSupplierMatch(suppliers, "Unknown").kind, "missing");
 });

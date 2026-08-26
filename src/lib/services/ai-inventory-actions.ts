@@ -2,6 +2,7 @@ import "server-only";
 import { AIActionProposalStatus, AIActionProposalType, InventoryMovementType, Prisma } from "@/generated/prisma/client";
 import type { AIActionProposal, InventoryProposalCandidate, InventoryProposalDisplay, InventoryProposalPayload } from "@/lib/ai/action-proposal-types";
 import { getAIActionRegistration } from "@/lib/ai/action-registry";
+import { resolveUniqueOperationalName } from "@/lib/ai/name-resolution";
 import { validateIngredient } from "@/lib/catalog/validation";
 import { calculateStockAdjustment, convertToBaseUnit } from "@/lib/inventory/units";
 import { prisma } from "@/lib/prisma";
@@ -10,7 +11,7 @@ import { assertRestaurantId } from "@/lib/services/validation";
 
 const inventoryTypes = new Set(["CREATE_INGREDIENT", "UPDATE_INGREDIENT", "ADJUST_INVENTORY_STOCK"]);
 const norm = (value: string) => value.trim().toLocaleLowerCase();
-function resolveIngredient<T extends { name: string }>(items: T[], value: string) { const exact = items.filter((item) => norm(item.name) === norm(value)); if (exact.length === 1) return exact[0]; const partial = items.filter((item) => norm(item.name).includes(norm(value))); if (partial.length > 1) throw new Error(`Multiple ingredients match '${value}'. Ask the user to choose an exact name.`); if (partial.length === 1) return partial[0]; throw new Error(`Ingredient '${value}' was not found in this restaurant.`); }
+function resolveIngredient<T extends { name: string }>(items: T[], value: string) { const resolved = resolveUniqueOperationalName(items, value); if (resolved) return resolved; const partial = items.filter((item) => norm(item.name).includes(norm(value))); if (partial.length > 1) throw new Error(`Multiple ingredients match '${value}'. Ask the user to choose an exact name.`); if (partial.length === 1) return partial[0]; throw new Error(`Ingredient '${value}' was not found in this restaurant.`); }
 function change(label: string, current: unknown, proposed: unknown, tone?: "decrease" | "increase") { return { label, ...(current !== undefined ? { current: String(current) } : {}), ...(proposed !== undefined ? { proposed: String(proposed) } : {}), ...(tone ? { tone } : {}) }; }
 
 export async function prepareInventoryProposal(input: { restaurantId: string; candidate: InventoryProposalCandidate }) {
@@ -28,13 +29,14 @@ export async function prepareInventoryProposal(input: { restaurantId: string; ca
   let normalizedQuantity: number | undefined; let countedStock: number | undefined; let stockAfter: number | undefined;
   if (c.actionType === "ADJUST_INVENTORY_STOCK") {
     if (!c.adjustmentKind) throw new Error("An inventory adjustment type is required.");
+    if (!c.quantityUnit) throw new Error("An explicit quantity unit is required for inventory adjustments.");
     if (c.adjustmentKind === "COUNT") {
       if (c.countedStock === undefined) throw new Error("A counted stock value is required.");
-      countedStock = convertToBaseUnit(c.countedStock, c.quantityUnit ?? ingredient!.unit, ingredient!.unit) ?? undefined;
+      countedStock = convertToBaseUnit(c.countedStock, c.quantityUnit, ingredient!.unit) ?? undefined;
       if (countedStock === undefined) throw new Error(`The supplied unit is incompatible with ${ingredient!.unit}.`);
     } else {
       if (c.quantity === undefined || c.quantity <= 0) throw new Error("A positive adjustment quantity is required.");
-      normalizedQuantity = convertToBaseUnit(c.quantity, c.quantityUnit ?? ingredient!.unit, ingredient!.unit) ?? undefined;
+      normalizedQuantity = convertToBaseUnit(c.quantity, c.quantityUnit, ingredient!.unit) ?? undefined;
       if (normalizedQuantity === undefined || normalizedQuantity <= 0) throw new Error(`The supplied unit is incompatible with ${ingredient!.unit}.`);
     }
     const result = calculateStockAdjustment({ currentStock: ingredient!.currentStock.toNumber(), kind: c.adjustmentKind, quantity: normalizedQuantity, countedStock });

@@ -5,6 +5,7 @@ import { getAIActionRegistration, getRegisteredAIActionTypes } from "@/lib/ai/ac
 import { validateAIApprovalRequest } from "@/lib/ai/action-request";
 import { AI_ACTION_POLICIES, isAuthorizedForAction } from "@/lib/ai/action-policy";
 import { buildBrowserConversationHistory } from "@/lib/ai/history";
+import { mergeProposalStatus } from "@/lib/ai/action-lifecycle";
 
 const now = new Date("2026-08-24T12:00:00.000Z");
 const base = { type: "CREATE_PURCHASE_ORDER_DRAFT", proposalRestaurantId: "restaurant-a", trustedRestaurantId: "restaurant-a", orgRole: "org:admin", status: "PENDING" as const, expiresAt: new Date("2026-08-24T12:30:00.000Z"), now };
@@ -35,6 +36,12 @@ test("generic lifecycle makes rejection terminal and execution idempotent", () =
   assert.equal(guardAIAction({ ...base, status: "REJECTED" }).kind, "unavailable");
   const repeated = guardAIAction({ ...base, status: "EXECUTED", resultResourceId: "purchase-order-1" });
   assert.deepEqual(repeated.kind === "already-executed" ? repeated.resultResourceId : null, "purchase-order-1");
+});
+
+test("stale proposal metadata cannot resurrect terminal lifecycle state", () => {
+  for (const terminal of ["EXECUTED", "REJECTED", "EXPIRED", "FAILED"] as const) assert.equal(mergeProposalStatus(terminal, "PENDING"), terminal);
+  assert.equal(mergeProposalStatus("APPROVED", "PENDING"), "APPROVED");
+  assert.equal(mergeProposalStatus("PENDING", "EXECUTED"), "EXECUTED");
 });
 
 test("browser approval tampering and unexpected action selectors are rejected", () => {

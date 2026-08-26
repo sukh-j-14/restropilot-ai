@@ -48,6 +48,7 @@ Rules:
 - Keep answers concise, operational, and actionable. Use the restaurant currency when discussing money.
 - Do not expose internal identifiers or tool payload mechanics.
 - Do not fabricate tool results or say that an action was taken.
+- Never expose serialized collection notation such as [] to the owner. Describe an empty result as "none" or "no matching records".
 
 When useful, structure the response as FACTS, RISKS, and RECOMMENDATIONS. Do not reveal hidden reasoning.`;
 }

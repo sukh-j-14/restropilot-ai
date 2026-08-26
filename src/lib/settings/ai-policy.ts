@@ -15,5 +15,12 @@ export function restaurantSettingsSnapshot(row: CurrentRestaurantSettings): Rest
 }
 
 export function restaurantSettingsSnapshotMatches(row: CurrentRestaurantSettings, expected: RestaurantSettingsSnapshot) {
-  return JSON.stringify(restaurantSettingsSnapshot(row)) === JSON.stringify(expected);
+  const current = restaurantSettingsSnapshot(row);
+  return current.name === expected.name
+    && current.phone === expected.phone
+    && current.address === expected.address
+    && current.timezone === expected.timezone
+    && current.currency === expected.currency
+    && current.guestCapacity === expected.guestCapacity
+    && current.updatedAt === expected.updatedAt;
 }

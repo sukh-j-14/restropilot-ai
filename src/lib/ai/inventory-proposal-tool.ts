@@ -26,5 +26,32 @@ export function validateInventoryProposalTool(value: unknown): InventoryProposal
   if (!ingredientName || !explanation) throw new AIManagerError("INVALID_TOOL", "Ingredient name and explanation are required.");
   const adjustmentKind = record.adjustment_kind as InventoryAdjustmentKind | undefined;
   if (adjustmentKind && !adjustmentKinds.includes(adjustmentKind)) throw new AIManagerError("INVALID_TOOL", "Adjustment kind is invalid.");
-  return { actionType: record.action_type as InventoryActionType, ingredientName, name: optionalString(record, "name", 120), unit: optionalString(record, "unit", 20), initialStock: optionalNumber(record, "initial_stock", 999999999.999), reorderLevel: optionalNumber(record, "reorder_level", 999999999.999), costPerUnit: optionalNumber(record, "cost_per_unit", 99999999.9999), adjustmentKind, quantity: optionalNumber(record, "quantity", 999999999.999), quantityUnit: optionalString(record, "quantity_unit", 20), countedStock: optionalNumber(record, "counted_stock", 999999999.999), reason: optionalString(record, "reason", 300), explanation };
+  const candidate = { actionType: record.action_type as InventoryActionType, ingredientName, name: optionalString(record, "name", 120), unit: optionalString(record, "unit", 20), initialStock: optionalNumber(record, "initial_stock", 999999999.999), reorderLevel: optionalNumber(record, "reorder_level", 999999999.999), costPerUnit: optionalNumber(record, "cost_per_unit", 99999999.9999), adjustmentKind, quantity: optionalNumber(record, "quantity", 999999999.999), quantityUnit: optionalString(record, "quantity_unit", 20), countedStock: optionalNumber(record, "counted_stock", 999999999.999), reason: optionalString(record, "reason", 300), explanation };
+  return candidate;
+}
+
+function explicitQuantityMeasurement(message: string) {
+  const match = message.match(/(\d+(?:,\d{3})*(?:\.\d+)?|\d*\.\d+)\s*(kilograms?|kilogrammes?|kgs?|kg|kh|grams?|grammes?|gms?|g|litres?|liters?|ltrs?|millilitres?|milliliters?|mls?|pieces?|pcs?)\b/i);
+  if (!match) return undefined;
+  const quantity = Number(match[1].replaceAll(",", ""));
+  if (!Number.isFinite(quantity)) return undefined;
+  const token = match[2].toLocaleLowerCase();
+  const unit = ["kg", "kgs", "kilogram", "kilograms", "kilogramme", "kilogrammes", "kh"].includes(token) ? "kg"
+    : ["g", "gm", "gms", "gram", "grams", "gramme", "grammes"].includes(token) ? "g"
+      : ["litre", "litres", "liter", "liters", "ltr", "ltrs"].includes(token) ? "litre"
+        : ["ml", "mls", "millilitre", "millilitres", "milliliter", "milliliters"].includes(token) ? "ml" : "piece";
+  return { quantity, unit };
+}
+
+/** The provider may normalize or rewrite quantities. The user's explicit
+ * measurement remains authoritative so unit conversion occurs exactly once. */
+export function validateInventoryProposalIntent(candidate: InventoryProposalCandidate, userMessage: string) {
+  if (candidate.actionType !== "ADJUST_INVENTORY_STOCK") return candidate;
+  const explicit = explicitQuantityMeasurement(userMessage);
+  const quantityUnit = explicit?.unit ?? candidate.quantityUnit;
+  if (!quantityUnit) throw new AIManagerError("INVALID_TOOL", "Inventory stock adjustments require an explicit quantity unit.");
+  if (!explicit) return { ...candidate, quantityUnit };
+  return candidate.adjustmentKind === "COUNT"
+    ? { ...candidate, quantityUnit, countedStock: explicit.quantity }
+    : { ...candidate, quantityUnit, quantity: explicit.quantity };
 }

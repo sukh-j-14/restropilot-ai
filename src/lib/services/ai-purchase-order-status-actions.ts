@@ -4,13 +4,11 @@ import { AIActionProposalStatus, AIActionProposalType, Prisma } from "@/generate
 import type { AIActionProposal, PurchaseOrderStatusProposalCandidate, PurchaseOrderStatusProposalDisplay, PurchaseOrderStatusProposalPayload, PurchaseOrderStatusSnapshot } from "@/lib/ai/action-proposal-types";
 import { getAIActionRegistration } from "@/lib/ai/action-registry";
 import { prisma } from "@/lib/prisma";
-import { canTransitionPurchaseOrder, PURCHASE_ORDER_STATUSES, purchaseOrderReference, shouldApplyInventory, type PurchaseOrderStatusValue } from "@/lib/purchase-orders/policy";
+import { canTransitionPurchaseOrder, PURCHASE_ORDER_STATUSES, purchaseOrderReference, purchaseOrderStatusSnapshotMatches, shouldApplyInventory, type PurchaseOrderStatusValue } from "@/lib/purchase-orders/policy";
 import { findPurchaseOrders, purchaseOrderSnapshot, transitionPurchaseOrderInTransaction } from "@/lib/services/purchase-orders";
 import { assertRestaurantId } from "@/lib/services/validation";
 
 function validStatus(value: string): value is PurchaseOrderStatusValue { return PURCHASE_ORDER_STATUSES.includes(value as PurchaseOrderStatusValue); }
-function sameSnapshot(left: PurchaseOrderStatusSnapshot, right: PurchaseOrderStatusSnapshot) { return JSON.stringify(left) === JSON.stringify(right); }
-
 export async function preparePurchaseOrderStatusProposal(input: { restaurantId: string; candidate: PurchaseOrderStatusProposalCandidate }) {
   assertRestaurantId(input.restaurantId);
   if (!validStatus(input.candidate.status)) throw new Error("The requested purchase-order status is invalid.");
@@ -43,7 +41,7 @@ export async function executePurchaseOrderStatusProposal(input: { restaurantId: 
     const current = await transaction.purchaseOrder.findFirst({ where: { id: payload.purchaseOrderId, restaurantId: input.restaurantId }, include: { supplier: { select: { id: true } }, items: { select: { ingredientId: true, quantity: true, unitCost: true }, orderBy: { ingredientId: "asc" } } } });
     if (!current) return { kind: "error" as const, message: "The purchase order is no longer available." };
     const currentSnapshot: PurchaseOrderStatusSnapshot = { status: current.status, supplierId: current.supplier.id, totalAmount: current.totalAmount.toNumber(), expectedAt: current.expectedAt?.toISOString() ?? null, orderedAt: current.orderedAt?.toISOString() ?? null, updatedAt: current.updatedAt.toISOString(), items: current.items.map((item) => ({ ingredientId: item.ingredientId, quantity: item.quantity.toNumber(), unitCost: item.unitCost.toNumber() })) };
-    if (!sameSnapshot(currentSnapshot, payload.snapshot)) return { kind: "error" as const, message: "The purchase order changed since this proposal was created. Generate a fresh proposal." };
+    if (!purchaseOrderStatusSnapshotMatches(currentSnapshot, payload.snapshot)) return { kind: "error" as const, message: "The purchase order changed since this proposal was created. Generate a fresh proposal." };
     if (!canTransitionPurchaseOrder(current.status, payload.status)) return { kind: "error" as const, message: "This purchase-order status change is no longer allowed." };
     const claimed = await transaction.aIActionProposal.updateMany({ where: { id: proposal.id, restaurantId: input.restaurantId, status: AIActionProposalStatus.PENDING, expiresAt: { gt: now } }, data: { status: AIActionProposalStatus.APPROVED, approvedAt: now, approvedByClerkUserId: input.clerkUserId } });
     if (!claimed.count) return { kind: "error" as const, message: "This proposal changed while it was being approved." };

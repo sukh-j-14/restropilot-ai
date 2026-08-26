@@ -3,6 +3,15 @@ export const ORDER_TYPES = ["DINE_IN", "TAKEAWAY", "DELIVERY"] as const;
 export type OrderStatusValue = (typeof ORDER_STATUSES)[number];
 export type OrderTypeValue = (typeof ORDER_TYPES)[number];
 
+type OrderSnapshot = { status?: string; orderType?: string; inventoryConsumedAt?: string | null; subtotal?: number; discount?: number; tax?: number; total?: number; items?: Array<{ menuItemId: string; quantity: number; unitPrice: number }> };
+
+export function orderSnapshotMatches(current: OrderSnapshot, expected: OrderSnapshot) {
+  if (current.status !== expected.status || current.orderType !== expected.orderType || current.inventoryConsumedAt !== expected.inventoryConsumedAt || current.subtotal !== expected.subtotal || current.discount !== expected.discount || current.tax !== expected.tax || current.total !== expected.total) return false;
+  const sortItems = (items: OrderSnapshot["items"] = []) => [...items].sort((left, right) => left.menuItemId.localeCompare(right.menuItemId));
+  const left = sortItems(current.items); const right = sortItems(expected.items);
+  return left.length === right.length && left.every((item, index) => item.menuItemId === right[index].menuItemId && item.quantity === right[index].quantity && item.unitPrice === right[index].unitPrice);
+}
+
 const transitions: Record<OrderStatusValue, OrderStatusValue[]> = {
   PENDING: ["CONFIRMED", "CANCELLED"],
   CONFIRMED: ["PREPARING", "CANCELLED"],

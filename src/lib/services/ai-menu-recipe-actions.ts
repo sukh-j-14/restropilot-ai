@@ -2,6 +2,7 @@ import "server-only";
 import { AIActionProposalStatus, AIActionProposalType, Prisma } from "@/generated/prisma/client";
 import type { AIActionProposal, MenuRecipeProposalCandidate, MenuRecipeProposalDisplay, MenuRecipeProposalPayload } from "@/lib/ai/action-proposal-types";
 import { getAIActionRegistration } from "@/lib/ai/action-registry";
+import { resolveUniqueOperationalName } from "@/lib/ai/name-resolution";
 import { validateMenuItem } from "@/lib/catalog/validation";
 import { validateRecipe } from "@/lib/recipes/validation";
 import { prisma } from "@/lib/prisma";
@@ -9,8 +10,8 @@ import { assertRestaurantId } from "@/lib/services/validation";
 
 const menuTypes = new Set(["CREATE_MENU_ITEM", "UPDATE_MENU_ITEM", "SET_MENU_ITEM_AVAILABILITY", "ADD_RECIPE_INGREDIENT", "UPDATE_RECIPE_INGREDIENT", "REMOVE_RECIPE_INGREDIENT"]);
 const norm = (value: string) => value.trim().toLocaleLowerCase();
-function uniqueByName<T extends { name: string }>(items: T[], value: string, label: string) { const exact = items.filter((item) => norm(item.name) === norm(value)); if (exact.length === 1) return exact[0]; const partial = items.filter((item) => norm(item.name).includes(norm(value))); if (exact.length > 1 || partial.length > 1) throw new Error(`Multiple ${label}s match '${value}'. Ask the user to choose an exact name.`); if (partial.length === 1) return partial[0]; throw new Error(`${label} '${value}' was not found in this restaurant.`); }
-function changes(input: Array<[string, unknown, unknown]>) { return input.filter(([, , proposed]) => proposed !== undefined).map(([label, current, proposed]) => ({ label, ...(current !== undefined ? { current: String(current) } : {}), ...(proposed !== undefined ? { proposed: String(proposed) } : {}) })); }
+function uniqueByName<T extends { name: string }>(items: T[], value: string, label: string) { const resolved = resolveUniqueOperationalName(items, value); if (resolved) return resolved; const partial = items.filter((item) => norm(item.name).includes(norm(value))); if (partial.length > 1) throw new Error(`Multiple ${label}s match '${value}'. Ask the user to choose an exact name.`); if (partial.length === 1) return partial[0]; throw new Error(`${label} '${value}' was not found in this restaurant.`); }
+function changes(input: Array<[string, unknown, unknown]>) { return input.filter(([, current, proposed]) => proposed !== undefined && (current === undefined || String(current) !== String(proposed))).map(([label, current, proposed]) => ({ label, ...(current !== undefined ? { current: String(current) } : {}), ...(proposed !== undefined ? { proposed: String(proposed) } : {}) })); }
 
 export async function prepareMenuRecipeProposal(input: { restaurantId: string; candidate: MenuRecipeProposalCandidate }) {
   assertRestaurantId(input.restaurantId);
@@ -35,6 +36,7 @@ export async function prepareMenuRecipeProposal(input: { restaurantId: string; c
   if (c.quantityRequired !== undefined && !validateRecipe({ quantityRequired: String(c.quantityRequired) }).success) throw new Error("The proposed recipe quantity is invalid.");
   const payload: MenuRecipeProposalPayload = { menuItemId: menu?.id, recipeItemId: recipe?.id, ingredientId: ingredient?.id, name: c.actionType === "CREATE_MENU_ITEM" || c.name ? proposedName : undefined, category: c.category, price: c.price, isActive: c.isActive, quantityRequired: c.quantityRequired, snapshot: { name: menu?.name, category: menu?.category, price: menu?.price.toNumber(), isActive: menu?.isActive, quantityRequired: recipe?.quantityRequired.toNumber() } };
   const display: MenuRecipeProposalDisplay = { menuItemName: menu?.name ?? proposedName, ingredientName: ingredient?.name, unit: ingredient?.unit, changes: changes(c.actionType === "CREATE_MENU_ITEM" ? [["Name", undefined, proposedName], ["Category", undefined, c.category], ["Price", undefined, c.price], ["Availability", undefined, c.isActive ?? true]] : c.actionType === "SET_MENU_ITEM_AVAILABILITY" ? [["Availability", menu?.isActive ? "Available" : "Unavailable", c.isActive ? "Available" : "Unavailable"]] : c.actionType.includes("RECIPE") ? [["Quantity", recipe?.quantityRequired.toNumber(), c.actionType === "REMOVE_RECIPE_INGREDIENT" ? "Removed" : c.quantityRequired]] : [["Name", menu?.name, c.name], ["Category", menu?.category, c.category], ["Price", menu?.price.toNumber(), c.price]]) };
+  if (c.actionType !== "CREATE_MENU_ITEM" && !display.changes.length) throw new Error("The proposed change already matches the current configuration.");
   return { type: c.actionType, payload, display, explanation: c.explanation };
 }
 

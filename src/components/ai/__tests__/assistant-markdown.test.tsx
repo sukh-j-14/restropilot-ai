@@ -18,6 +18,12 @@ test("assistant numbered lists render as ordered lists", () => {
   assert.match(html, /<ol[^>]*>/); assert.equal((html.match(/<li>/g) ?? []).length, 2);
 });
 
+test("assistant markdown headings render semantically without visible hash markers", () => {
+  const html = renderToStaticMarkup(<AssistantMarkdown content={"### FACTS\n\n- No low-stock ingredients"} />);
+  assert.match(html, /<h3[^>]*>FACTS<\/h3>/);
+  assert.doesNotMatch(html, /###/);
+});
+
 test("raw HTML remains escaped text", () => {
   const html = renderToStaticMarkup(<AssistantMarkdown content={'<img src=x onerror="alert(1)">'} />);
   assert.doesNotMatch(html, /<img/i);

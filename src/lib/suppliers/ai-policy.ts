@@ -1,3 +1,5 @@
+import { resolveUniqueOperationalName } from "@/lib/ai/name-resolution";
+
 export type SupplierIdentity = { id: string; name: string };
 
 const normalize = (value: string) => value.trim().toLocaleLowerCase();
@@ -8,6 +10,8 @@ export function resolveSupplierMatch<T extends SupplierIdentity>(suppliers: T[],
   const partial = suppliers.filter((supplier) => normalize(supplier.name).includes(normalize(query)));
   if (partial.length === 1) return { kind: "resolved", supplier: partial[0] };
   if (partial.length > 1) return { kind: "ambiguous", matches: partial };
+  const typoMatch = resolveUniqueOperationalName(suppliers, query);
+  if (typoMatch) return { kind: "resolved", supplier: typoMatch };
   return { kind: "missing" };
 }
 
